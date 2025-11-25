@@ -17,7 +17,7 @@ read -rp "Enter target disk (e.g., /dev/sda): " DISK
 DISK="${DISK:-/dev/sda}"
 
 # Determine if we need a partition suffix ("p" for NVMe, nothing for SATA/USB)
-if [[ "$DISK" =~ "nvme" ]]; then
+if [[ "$DISK" =~ "nvme" || "$DISK" =~ "mmcblk" ]]; then
   DISK_SUFFIX="p"
 else
   DISK_SUFFIX=""
