@@ -114,4 +114,4 @@ sudo chmod 000 /dev/nvme0n1
 - Triple-check that you’ve chosen the correct device before continuing.  
 - Use at your own risk — know that this hasn't been prorprly tested to avoid surprises.
 - It seems that if you enable `SSHD` from the installer then it will fail to install SteamOS.
-- Some people have reported that after installing, the SteamOS `first run` gets stuck trying to apply an update.
+- Some people have reported that after installing, the SteamOS `first run` gets stuck trying to apply an update. On some "unsupported" machines, [nightly build of Recovery USB](https://steamdeck-images.steamos.cloud/steamdeck/20251027.1000/steamdeck-repair-main-20251027.1000-3.8.0.img.zip) is more likely to work.
