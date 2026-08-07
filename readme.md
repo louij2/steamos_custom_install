@@ -8,6 +8,11 @@ This tool lets you install or repair SteamOS using **Valve’s official recovery
 - Fixes the partition naming issue (`p` vs no-`p`) on non-NVMe drives
 - Works with or without a graphical session — falls back to terminal prompts when the zenity dialogs can't be shown
 
+> 🧭 **New to Linux or the terminal?** Follow the
+> **[step-by-step guide](docs/step-by-step-guide.md)** instead of this page. It
+> spells out every command, shows exactly what each prompt looks like, and
+> explains how to identify the right disk.
+
 ---
 
 ## 💿 What You Need
@@ -150,9 +155,10 @@ Pass a **whole disk**, not a partition — `/dev/sda`, not `/dev/sda1`. Run
 
 ## 📂 File Overview
 
-| File                | Description                                       |
-|---------------------|---------------------------------------------------|
-| `repair_device.sh`  | Main patched installer script with disk prompt    |
+| File                          | Description                                    |
+|-------------------------------|------------------------------------------------|
+| `repair_device.sh`            | Main patched installer script with disk prompt |
+| `docs/step-by-step-guide.md`  | Beginner walkthrough with annotated prompts    |
 
 ---
 
