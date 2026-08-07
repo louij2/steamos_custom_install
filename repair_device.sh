@@ -7,10 +7,43 @@
 # destructive if you have modified the expected partition layout.
 #
 
-set -eu
+# -E is required: without it the ERR trap below is NOT inherited by shell
+# functions, so a command failing inside one (e.g. zenity in prompt_step)
+# aborts the script with no output at all.
+set -euE
 
 die() { echo >&2 "!! $*"; exit 1; }
 readvar() { IFS= read -r -d '' "$1" || true; }
+
+# Validate the requested action *before* prompting for a disk, so that running
+# the script with no target (or a typo) prints the help text instead of asking
+# the user to confirm a destructive operation that is never going to run.
+TARGET="${1-help}"
+case "$TARGET" in
+  all|system|home|chroot|sanitize) ;;
+  *) TARGET=help ;;
+esac
+
+if [[ $TARGET = help ]]; then
+  cat >&2 <<'EOD'
+This tool can be used to reinstall or repair your SteamOS installation.
+
+Usage: sudo ./repair_device.sh <target>
+
+Possible targets:
+    all : permanently destroy all data on the target disk, and reinstall SteamOS.
+    system : reinstall SteamOS on the system partitions.
+    home : remove games and personalization.
+    chroot : chroot to the primary SteamOS partition set.
+    sanitize : perform an NVME sanitize operation.
+EOD
+  exit 1
+fi
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo >&2 "!! Please run as root, e.g. sudo ./repair_device.sh $TARGET"
+  exit 1
+fi
 
 # Prompt user for target disk (default to /dev/sda)
 read -rp "Enter target disk (e.g., /dev/sda): " DISK
@@ -24,6 +57,13 @@ else
 fi
 
 DOPARTVERIFY=1
+
+if [[ ! -b "$DISK" ]]; then
+  if [[ -e "$DISK" ]]; then
+    die "$DISK exists but is not a block device. Pass a whole disk such as /dev/sda (see 'lsblk')."
+  fi
+  die "$DISK does not exist. Run 'lsblk' to list the disks attached to this machine."
+fi
 
 echo "Target disk: $DISK"
 echo "Will use partitions like: ${DISK}${DISK_SUFFIX}1, ${DISK}${DISK_SUFFIX}2, ..."
@@ -67,10 +107,17 @@ diskpart() { echo "$DISK$DISK_SUFFIX$1"; }
 ## Util colors and such
 ##
 
+# Valve's original script blocks forever here because it runs under the OOBE
+# image where there is no shell to return to. This fork is launched from a
+# terminal, so report where we failed and exit instead of hanging silently.
+# Set HANG_ON_ERROR=1 to restore the original behaviour.
 err() {
+  local rc=$?
   echo >&2
+  eerr "Failed at line ${BASH_LINENO[0]} (exit $rc): ${BASH_COMMAND}"
   eerr "Imaging error occured, see above and restart process."
-  sleep infinity
+  [[ -z ${HANG_ON_ERROR:-} ]] || sleep infinity
+  exit "$rc"
 }
 trap err ERR
 
@@ -94,8 +141,21 @@ fmt_ext4()  { [[ $# -eq 2 && -n $1 && -n $2 ]] || die; cmd sudo mkfs.ext4 -F -L 
 fmt_fat32() { [[ $# -eq 2 && -n $1 && -n $2 ]] || die; cmd sudo mkfs.vfat -n"$1" "$2"; }
 
 ##
-## Prompt mechanics - currently using Zenity
+## Prompt mechanics - Zenity when a usable desktop session is present, plain
+## terminal prompts otherwise.
 ##
+
+# Can we actually put a GUI dialog on screen? Running the script under sudo
+# strips XAUTHORITY / WAYLAND_DISPLAY / XDG_RUNTIME_DIR from the environment, so
+# zenity is frequently present but unable to connect to the display. Probing it
+# once here means we fall back cleanly instead of dying mid-run.
+can_use_zenity()
+{
+  [[ -z ${NOZENITY:-} ]] || return 1
+  command -v zenity >/dev/null 2>&1 || return 1
+  [[ -n ${DISPLAY:-} || -n ${WAYLAND_DISPLAY:-} ]] || return 1
+  zenity --version >/dev/null 2>&1 || return 1
+}
 
 # Give the user a choice between Proceed, or Cancel (which exits this script)
 #  $1 Title
@@ -103,20 +163,34 @@ fmt_fat32() { [[ $# -eq 2 && -n $1 && -n $2 ]] || die; cmd sudo mkfs.vfat -n"$1"
 #
 prompt_step()
 {
-  title="$1"
-  msg="$2"
+  local title="$1"
+  local msg="$2"
   if [[ ${NOPROMPT:-} ]]; then
     echo -e "$msg"
     return 0
   fi
-  zenity --title "$title" --question --ok-label "Proceed" --cancel-label "Cancel" --no-wrap --text "$msg"
-  [[ $? = 0 ]] || exit 1
+
+  if can_use_zenity; then
+    if zenity --title "$title" --question --ok-label "Proceed" --cancel-label "Cancel" --no-wrap --text "$msg"; then
+      return 0
+    fi
+    die "Aborted by user"
+  fi
+
+  # Terminal fallback. Note the explicit `|| true` on read: without it, EOF on
+  # stdin would trip errexit and abort the script with no explanation.
+  local reply=""
+  echo
+  echo "== $title =="
+  echo -e "$msg"
+  echo
+  read -rp "Proceed? (type YES to continue): " reply || true
+  [[ "$reply" == "YES" ]] || die "Aborted by user"
 }
 
 prompt_reboot()
 {
-  prompt_step "Action Complete" "${1}\n\nChoose Proceed to reboot the Steam Deck now, or Cancel to stay in the repair image."
-  [[ $? = 0 ]] || exit 1
+  prompt_step "Action Complete" "${1}\n\nChoose Proceed to reboot now, or Cancel to stay in the repair image."
   if [[ ${POWEROFF:-} ]]; then
     cmd systemctl poweroff
   else
@@ -188,12 +262,7 @@ exithandler() {
 }
 trap exithandler EXIT
 
-# Check existence of target disk
-if [[ ! -e "$DISK" ]]; then
-  eerr "$DISK does not exist -- no nvme drive detected?"
-  sleep infinity
-  exit 1
-fi
+# Target disk existence is validated up front, right after it is entered.
 
 # Reinstall a fresh SteamOS copy.
 #
@@ -363,34 +432,13 @@ sanitize_all()
   echo "... sanitize done."
 }
 
-# print quick list of targets
-#
-help()
-{
-  readvar HELPMSG << EOD
-This tool can be used to reinstall or repair your SteamOS installation on a Steam Deck.
-
-Possible targets:
-    all : permanently destroy all data on your Steam Deck, and reinstall SteamOS.
-    system : reinstall SteamOS on the Steam Deck system partitions.
-    home : remove games and personalization from the Steam Deck.
-    chroot : chroot to the primary SteamOS partition set.
-    sanitize : perform an NVME sanitize operation.
-EOD
-  emsg "$HELPMSG"
-  if [[ "$EUID" -ne 0 ]]; then
-    eerr "Please run as root."
-    exit 1
-  fi
-}
-
-[[ "$EUID" -ne 0 ]] && help
-
 writePartitionTable=0
 writeOS=0
 writeHome=0
 
-case "${1-help}" in
+# $TARGET is validated at the top of the script, before anything destructive is
+# offered, so every branch below is a known-good target.
+case "$TARGET" in
 all)
   prompt_step "Reimage Steam Deck" "This action will reimage the Steam Deck.\nThis will permanently destroy all data on your Steam Deck and reinstall SteamOS.\n\nThis cannot be undone.\n\nChoose Proceed only if you wish to clear and reimage this device."
   writePartitionTable=1
@@ -418,7 +466,4 @@ sanitize)
   prompt_step "Clear and sanitize NVME disk" "This action will kick off an NVME sanitize on the Steam Deck, irrevocably deleting all user data.\n\nThis action cannot be undone.\n\nChoose Proceed only if you want to remove all data from the attached Steam Deck primary drive."
   sanitize_all
   ;;
-*)
-  help
-  ;;
-esac 
+esac
