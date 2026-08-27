@@ -4,9 +4,12 @@ This tool lets you install or repair SteamOS using **Valve’s official recovery
 
 ### ✅ Features:
 - A patched version of `repair_device.sh`
-- A prompt to choose your install disk (e.g. `/dev/sda`)
+- A prompt to choose your install disk (e.g. `/dev/sda`) — or pass `--disk`
 - Fixes the partition naming issue (`p` vs no-`p`) on non-NVMe drives
 - Works with or without a graphical session — falls back to terminal prompts when the zenity dialogs can't be shown
+- `--dry-run` shows you every destructive command **without running any of them**
+- Skips the Steam Deck BIOS and controller firmware flashing by default, which is the right call on non-Deck hardware
+- A [catalogue of Valve's recovery images](docs/images.md) with notes on which ones work where
 
 > 🧭 **New to Linux or the terminal?** Follow the
 > **[step-by-step guide](docs/step-by-step-guide.md)** instead of this page. It
@@ -20,7 +23,10 @@ This tool lets you install or repair SteamOS using **Valve’s official recovery
 - A Steam Deck or compatible PC 
   👉 [Valve's Requirments](https://store.steampowered.com/steamos/buildyourown)
 - Valve’s official SteamOS recovery image  
-  👉 [Download here](https://store.steampowered.com/steamos/download/?ver=custom)
+  👉 [Pick one from the image catalogue](docs/images.md) — it lists the latest builds,
+  flags which are **Steam Deck** (`main`) vs **SteamOS for PC** (`pc`), and carries
+  notes on images confirmed to work on awkward hardware
+  👉 Or [download from Valve directly](https://store.steampowered.com/steamos/download/?ver=custom)
 - A USB stick flashed with the image using [Balena Etcher](https://www.balena.io/etcher/) or [Rufus](https://rufus.ie/en/)
 - A keyboard and mouse
 - The target drive you want to install SteamOS on (internal or external)
@@ -59,9 +65,19 @@ chmod +x repair_device.sh
 ---
 ### 5. Run the Installer Script
 
+**See what it would do first — this touches nothing:**
+
+```bash
+sudo ./repair_device.sh --disk /dev/sda --dry-run all
+```
+
+**Then do it for real:**
+
 ```bash
 sudo ./repair_device.sh all
 ```
+
+Not sure which disk? `sudo ./repair_device.sh --list-disks` prints what's attached.
 
 You’ll be prompted to:
 - Enter the target disk (e.g. `/dev/sda`)
@@ -71,6 +87,21 @@ You’ll be prompted to:
 
 > The target (`all`, `system`, `home`, `chroot`, `sanitize`) is **required**.
 > Running `sudo ./repair_device.sh` with no target just prints the help text.
+
+<details>
+<summary>All options</summary>
+
+| Option | Effect |
+|---|---|
+| `-d`, `--disk DEVICE` | Target disk, e.g. `/dev/sda`. Prompted for if omitted |
+| `-n`, `--dry-run` | Print every destructive command instead of running it |
+| `-y`, `--yes` | Skip all confirmation prompts (unattended) |
+| `--no-zenity` | Always use terminal prompts, never GUI dialogs |
+| `--poweroff` | Power off instead of rebooting when finished |
+| `--list-disks` | Show attached disks and exit |
+| `-h`, `--help` | Full help |
+
+</details>
 
 ---
 
@@ -105,6 +136,9 @@ sudo chmod 000 /dev/nvme0n1
 | `NOZENITY=1` | Always use terminal prompts, never zenity dialogs |
 | `POWEROFF=1` | Power off instead of rebooting when finished |
 | `HANG_ON_ERROR=1` | Stay on screen after an error instead of exiting (Valve's original behaviour) |
+| `DRY_RUN=1` | Same as `--dry-run` |
+| `FORCEBIOS=1` | Enable the BIOS update step — **Steam Deck hardware only** |
+| `FORCECONTROLLER=1` | Enable the controller firmware update step |
 
 ---
 
@@ -150,6 +184,11 @@ Pass a **whole disk**, not a partition — `/dev/sda`, not `/dev/sda1`. Run
 | Requires zenity + a desktop session | Falls back to terminal prompts            |
 | Hangs forever on error             | Reports the failing line and exits        |
 | Wipes disks with no confirmation   | Prompts before doing anything destructive |
+| No way to preview                  | `--dry-run` prints every command, runs none |
+| Flashes Deck BIOS + controller FW  | Skipped unless you opt in — safer on non-Deck hardware |
+
+The full list, kept as a review checklist for upstream changes, is in
+[docs/upstream-sync.md](docs/upstream-sync.md).
 
 ---
 
@@ -157,8 +196,16 @@ Pass a **whole disk**, not a partition — `/dev/sda`, not `/dev/sda1`. Run
 
 | File                          | Description                                    |
 |-------------------------------|------------------------------------------------|
-| `repair_device.sh`            | Main patched installer script with disk prompt |
+| `repair_device.sh`            | Compatibility shim — forwards to `bin/steamos-install` |
+| `bin/steamos-install`         | The installer entrypoint (argument parsing, prompts, flow) |
+| `lib/`                        | `log` · `ui` · `disk` · `steps` · `sanitize` modules |
+| `upstream/`                   | Valve's pristine script, vendored as a diff baseline — never executed |
+| `data/images.yaml`            | Recovery image catalogue + hand-written end-user notes |
+| `tools/`                      | Upstream extraction and catalogue refresh tooling |
+| `tests/`                      | `bats` unit tests |
 | `docs/step-by-step-guide.md`  | Beginner walkthrough with annotated prompts    |
+| `docs/images.md`              | Generated image catalogue |
+| `docs/upstream-sync.md`       | How Valve's changes are tracked, and our deliberate divergences |
 
 ---
 

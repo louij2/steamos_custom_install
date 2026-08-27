@@ -1,0 +1,84 @@
+name: Refresh image catalogue
+
+# Re-scrapes Valve's image index and opens a PR if the catalogue moved. Cheap:
+# it reads a directory index plus one small manifest.json per tracked build, and
+# a HEAD for each size. No image is downloaded.
+#
+# Like upstream-sync, the PR is the approval gate. Hand-written notes in the
+# `pinned` section of data/images.yaml are never touched by the tool.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"   # 05:00 UTC every Monday
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many of the newest builds to track"
+        required: false
+        default: "8"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: images-refresh
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+
+      - name: Refresh catalogue
+        run: python3 tools/refresh-images.py --limit "${{ inputs.limit || '8' }}"
+
+      - name: Show what moved
+        run: |
+          if git diff --quiet; then
+            echo ":: no change"
+          else
+            {
+              echo '### Image catalogue changed'
+              echo
+              echo '```diff'
+              git --no-pager diff --no-color | head -200
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Open a pull request for review
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: automation/images-refresh
+          base: main
+          commit-message: "data: refresh SteamOS recovery image catalogue"
+          title: "data: refresh SteamOS recovery image catalogue"
+          labels: images
+          delete-branch: true
+          add-paths: |
+            data/images.yaml
+            docs/images.md
+          body: |
+            Automated refresh of the recovery-image catalogue from Valve's
+            public index.
+
+            Only the `tracked` section of `data/images.yaml` and the generated
+            `docs/images.md` are touched — the hand-written `pinned` entries and
+            their end-user notes are left exactly as they are.
+
+            Worth a glance before merging:
+
+            - Did a new **`pc`-branch** build appear? Those matter most for the
+              non-Deck hardware this project targets.
+            - Did the SteamOS **version** roll over (e.g. 3.9 → 3.10)? If so, it
+              is worth running the
+              [upstream sync](upstream-sync.yml) too, since Valve's
+              `repair_device.sh` often changes with it.
+            - If you have tested one of these images, move it up into `pinned`
+              and add a note saying which machine you tested on.

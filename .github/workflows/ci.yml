@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "refactor/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: Lint every shell script we ship
+        run: |
+          set -euo pipefail
+          # Deliberately excludes upstream/ - that is Valve's code, vendored
+          # verbatim for diffing. Linting it would just produce noise we cannot
+          # act on without diverging from upstream.
+          git ls-files -z '*.sh' 'bin/*' \
+            | grep -zv '^upstream/' \
+            | while IFS= read -r -d '' f; do
+                if head -c2 "$f" | grep -q '#!'; then printf '%s\0' "$f"; fi
+              done > /tmp/scripts.z
+          tr '\0' '\n' < /tmp/scripts.z | sed 's/^/  /'
+          test -s /tmp/scripts.z || { echo "!! no scripts found to lint"; exit 1; }
+          xargs -0 shellcheck -x < /tmp/scripts.z
+
+  bats:
+    name: bats
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+
+      - name: Run tests
+        run: bats --print-output-on-failure tests/
+
+  smoke:
+    name: dry-run smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise the destructive path against a loopback device
+        run: |
+          set -euo pipefail
+          # A real block device, so validate_disk and the partition-suffix logic
+          # are genuinely exercised - but DRY_RUN means nothing executes.
+          truncate -s 64M /tmp/fake.img
+          LOOP=$(sudo losetup --find --show /tmp/fake.img)
+          echo "loop device: $LOOP"
+          sudo DRY_RUN=1 ./bin/steamos-install --dry-run --yes --disk "$LOOP" all | tee /tmp/out.txt
+          sudo losetup -d "$LOOP"
+
+          echo "--- asserting nothing destructive ran ---"
+          grep -q 'dry-run: not executed' /tmp/out.txt
+          # sfdisk must be shown but never invoked
+          grep -q 'sfdisk' /tmp/out.txt
+          ! grep -qi 'Created a new GPT' /tmp/out.txt
+          echo "OK"
+
+  catalogue:
+    name: image catalogue is valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.x" }
+
+      - name: Parse and re-render the catalogue
+        # Does not hit the network: only checks that data/images.yaml parses and
+        # that docs/images.md matches what it renders to. The network refresh is
+        # images-refresh.yml.
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          import importlib.util
+          spec = importlib.util.spec_from_file_location("ri", "tools/refresh-images.py")
+          ri = importlib.util.module_from_spec(spec); spec.loader.exec_module(ri)
+
+          data = ri.load_yaml(ri.DATA)
+          assert data["pinned"] or data["tracked"], "catalogue is empty"
+          for section in ("pinned", "tracked"):
+              for e in data[section]:
+                  assert e.get("url", "").startswith("https://"), f"bad url in {section}: {e}"
+                  assert e.get("build"), f"missing build in {section}: {e}"
+          rendered = ri.render_docs(data)
+          current = ri.DOCS.read_text()
+          if rendered != current:
+              print("!! docs/images.md is stale - run tools/refresh-images.py", file=sys.stderr)
+              sys.exit(1)
+          print(f":: catalogue OK ({len(data['pinned'])} pinned, {len(data['tracked'])} tracked)")
+          PY
