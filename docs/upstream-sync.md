@@ -13,15 +13,44 @@ There is no tidy source to poll. Checked, and ruled out:
 | `jupiter-main` package repo | No package ships `repair_device.sh` |
 | `holo-main` package repo | `steamos-customizations-git` ships the helper tools it *calls* (`steamos-chroot`, `steamos-bootconf`, `steamos-partsets`) but not the script |
 | `gitlab.steamos.cloud` | Returns `302` — no anonymous access |
-| Recovery image | **The only authoritative copy** |
+| `/steamdeck/` image tree | **Not this one.** Verified by extraction: downloaded build `20260826.1000`, mounted all four partitions, no `repair_device.sh`. These are OS images written *to* the internal drive, not bootable media |
+| `/recovery/` image tree | **The authoritative copy** — the bootable repair media |
 
-So the sync job downloads a recovery image (~3.3 GB), loop-mounts it, and
-extracts the script. That cost is why it runs **monthly and on demand**, never
-on push.
+So the sync job downloads an image from
+`steamdeck-images.steamos.cloud/recovery/`, loop-mounts it, and extracts the
+script. That cost is why it runs **monthly and on demand**, never on push.
+
+### The three generations in `/recovery/`
+
+| Prefix | Era | Notes |
+|---|---|---|
+| `steamdeck-oobe-repair-*` | 2026– | Current. What the extractor picks by default |
+| `steamdeck-repair-*` | 2023–2025 | Previous line |
+| `steamdeck-recovery-N` | 2022 | Original numbered series; still boots |
+
+`.zip` is preferred over `.bz2` — identical content and size, but `unzip` is far
+more likely to be present, and it is what Etcher and Rufus accept directly.
 
 `tools/extract-upstream.sh` *searches* the image rather than assuming a path —
 Valve has moved the file before. If it cannot find it the job fails loudly
 rather than silently producing an empty diff.
+
+> **⚠️ Open question: where the script actually lives.**
+>
+> Verified so far, by running the extractor end to end:
+>
+> - `/steamdeck/20260826.1000` (OS image) — 4 partitions mounted, **not found**
+> - `/recovery/steamdeck-oobe-repair-20260707.10-3.8.14` — 4 partitions
+>   mounted, **not found**
+>
+> So `repair_device.sh` is not sitting at the top of a mountable filesystem in
+> either tree. Leading candidates: a btrfs subvolume that is not the default,
+> a nested squashfs/erofs, or a different filename in current images.
+>
+> Until this is pinned down the sync workflow will fail loudly rather than
+> silently produce an empty diff — which is the correct failure mode, but it
+> does mean **upstream sync is not yet functional.** The image catalogue and
+> everything else on this branch are unaffected.
 
 ## How the approval gate works
 
@@ -74,14 +103,17 @@ these areas, it needs thought rather than a straight port.
 ## Running it by hand
 
 ```bash
-# newest build
+# see what Valve currently publishes (no download)
+./tools/extract-upstream.sh --list
+
+# newest oobe-repair image
 sudo ./tools/extract-upstream.sh
 
 # a specific build
-sudo ./tools/extract-upstream.sh --build 20260826.1000
+sudo ./tools/extract-upstream.sh --build 20260707.10
 
-# an image you already downloaded
-sudo ./tools/extract-upstream.sh --image ~/Downloads/steamdeck-recovery.img.zst
+# an image you already downloaded (.img / .zip / .bz2 / .zst)
+sudo ./tools/extract-upstream.sh --image ~/Downloads/steamdeck-oobe-repair.img.zip
 
 # keep the mount to poke around if the search fails
 sudo ./tools/extract-upstream.sh --keep

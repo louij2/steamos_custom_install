@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Refresh the catalogue of Valve SteamOS recovery images.
 
-Scrapes Valve's public image index, fetches the small manifest.json beside each
-build, and merges the result into data/images.yaml without touching the
-hand-written notes. Then regenerates docs/images.md.
+Scrapes Valve's /recovery/ index and merges the result into data/images.yaml
+without touching the hand-written notes, then regenerates docs/images.md.
+
+IMPORTANT: the source is /recovery/, NOT /steamdeck/. The /steamdeck/ tree
+holds OS images that get written to the internal drive - they are not bootable
+repair media and do not contain repair_device.sh (verified by extraction).
+Users of this project need the /recovery/ artefacts, which come in three
+generations: steamdeck-oobe-repair-* (current), steamdeck-repair-*, and the
+original steamdeck-recovery-N series.
 
 Standard library only - CI needs no pip install.
 
@@ -22,15 +28,29 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-INDEX = "https://steamdeck-images.steamos.cloud/steamdeck/"
+INDEX = "https://steamdeck-images.steamos.cloud/recovery/"
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "images.yaml"
 DOCS = ROOT / "docs" / "images.md"
 UA = "steamos_custom_install-image-refresh/1.0 (+https://github.com/louij2/steamos_custom_install)"
 TIMEOUT = 30
 
-BUILD_RE = re.compile(r'href="((\d{8}\.\d+)/)"')
-FILE_RE = re.compile(r'href="([^"?/][^"]*\.(?:img\.zst|img\.zip|manifest\.json))"')
+# The index is an nginx autoindex table: filename, size, date.
+ROW_RE = re.compile(
+    r'href="(?P<file>steamdeck-(?:oobe-repair|repair|recovery)-[0-9A-Za-z.-]+\.img\.(?:zip|bz2|zst))"'
+    r'.*?<td[^>]*>\s*(?P<size>[\d.]+\s*[KMGT]iB)\s*</td>'
+    r'.*?<td[^>]*>\s*(?P<date>[0-9]{4}-[A-Za-z]{3}-[0-9]{2}[^<]*?)\s*</td>',
+    re.S,
+)
+NAME_RE = re.compile(
+    r'^steamdeck-(?P<gen>oobe-repair|repair|recovery)-'
+    r'(?P<build>[0-9]{8}\.[0-9]+|[0-9]+)'
+    r'(?:-(?P<version>[0-9][0-9.]*))?\.img\.(?P<ext>zip|bz2|zst)$'
+)
+# Prefer .zip: same content and size as .bz2, but unzip is far more widely
+# available - notably it is what Rufus and Etcher accept directly.
+EXT_PREFERENCE = {"zip": 0, "zst": 1, "bz2": 2}
+GEN_ORDER = {"oobe-repair": 0, "repair": 1, "recovery": 2}
 
 
 def fetch(url: str) -> str:
@@ -50,46 +70,58 @@ def head(url: str) -> int | None:
         return None
 
 
-def list_builds() -> list[str]:
+def list_recovery_images() -> list[dict]:
+    """Every recovery artefact Valve currently publishes, newest first."""
     html = fetch(INDEX)
-    builds = sorted({m.group(2) for m in BUILD_RE.finditer(html)},
-                    key=lambda b: [int(x) for x in b.split(".")])
-    if not builds:
-        raise SystemExit("!! No build directories found - has the index format changed?")
-    return builds
+    seen: dict[str, dict] = {}
+
+    for m in ROW_RE.finditer(html):
+        fname = m.group("file")
+        nm = NAME_RE.match(fname)
+        if not nm:
+            continue
+        gen = nm.group("gen")
+        build = nm.group("build")
+        ext = nm.group("ext")
+
+        entry = {
+            "build": build,
+            "generation": gen,
+            "file": fname,
+            "url": INDEX + fname,
+            "size_human": m.group("size").replace("\u00a0", " ").strip(),
+            "published": m.group("date").strip(),
+        }
+        if nm.group("version"):
+            entry["version"] = nm.group("version")
+
+        # One row per build+generation; keep the most usable extension.
+        key = f"{gen}-{build}"
+        if key not in seen or EXT_PREFERENCE[ext] < EXT_PREFERENCE[
+            NAME_RE.match(seen[key]["file"]).group("ext")
+        ]:
+            entry["label"] = _label(entry)
+            seen[key] = entry
+
+    if not seen:
+        raise SystemExit(
+            "!! No recovery images found - has the index format changed?\n"
+            f"   Check {INDEX} by hand."
+        )
+
+    def sort_key(e: dict):
+        b = e["build"]
+        numeric = [int(x) for x in b.split(".")] if "." in b else [int(b)]
+        return (GEN_ORDER[e["generation"]], [-n for n in numeric])
+
+    return sorted(seen.values(), key=sort_key)
 
 
-def describe(build: str) -> dict | None:
-    """Return catalogue metadata for one build directory."""
-    base = f"{INDEX}{build}/"
-    try:
-        html = fetch(base)
-    except urllib.error.URLError as e:
-        print(f";; skipping {build}: {e}", file=sys.stderr)
-        return None
-
-    files = [m.group(1) for m in FILE_RE.finditer(html)]
-    image = next((f for f in files if f.endswith((".img.zst", ".img.zip"))), None)
-    manifest = next((f for f in files if f.endswith(".manifest.json")), None)
-    if not image:
-        return None
-
-    entry: dict = {"build": build, "url": base + image, "file": image}
-
-    if manifest:
-        try:
-            m = json.loads(fetch(base + manifest))
-            for k in ("version", "variant", "branch", "release", "arch"):
-                if m.get(k):
-                    entry[k] = m[k]
-        except (urllib.error.URLError, json.JSONDecodeError):
-            pass
-
-    size = head(entry["url"])
-    if size:
-        entry["size_bytes"] = size
-        entry["size_human"] = f"{size / 1024**3:.2f} GiB"
-    return entry
+def _label(e: dict) -> str:
+    pretty = {"oobe-repair": "OOBE repair", "repair": "Repair", "recovery": "Recovery"}
+    gen = pretty[e["generation"]]
+    ver = f" {e['version']}" if e.get("version") else ""
+    return f"{gen} {e['build']}{ver}"
 
 
 # --- minimal YAML I/O -------------------------------------------------------
@@ -136,9 +168,9 @@ def dump_yaml(data: dict, path: Path) -> str:
         "pinned:",
     ]
     def emit(e: dict) -> None:
-        keys = [k for k in ("build", "version", "file", "url", "size_bytes",
-                            "size_human", "variant", "branch", "release", "arch",
-                            "label", "note") if k in e]
+        keys = [k for k in ("build", "generation", "version", "file", "url",
+                            "size_bytes", "size_human", "published", "variant",
+                            "branch", "release", "arch", "label", "note") if k in e]
         first = True
         for k in keys:
             v = e[k]
@@ -163,33 +195,38 @@ def render_docs(data: dict) -> str:
         name = e.get("label") or e.get("version") or e.get("build", "?")
         size = e.get("size_human", "-")
         note = e.get("note", "")
-        branch = e.get("branch", "-")
+        gen = e.get("generation", e.get("branch", "-"))
         return (f"| [{name}]({e['url']}) | `{e.get('build','?')}` | {e.get('version','-')} "
-                f"| {branch} | {size} | {note} |")
+                f"| {gen} | {size} | {e.get('published','-')} | {note} |")
 
     lines = [
         "# SteamOS recovery images",
         "",
         "<!-- GENERATED by tools/refresh-images.py from data/images.yaml. Do not edit by hand. -->",
         "",
-        "Every image below is hosted by Valve on `steamdeck-images.steamos.cloud`.",
+        "Every image below is hosted by Valve at",
+        "`steamdeck-images.steamos.cloud/recovery/` - the bootable repair media.",
+        "(The `/steamdeck/` tree on the same host holds OS images that are written",
+        "to the internal drive; those are *not* what you boot, and do not carry the",
+        "installer script.)",
+        "",
+        "",
         "Download one, write it to a USB stick with [Balena Etcher](https://www.balena.io/etcher/)",
         "or [Rufus](https://rufus.ie/en/), boot it, then follow the",
         "[step-by-step guide](step-by-step-guide.md).",
         "",
-        "> Images ending in `.img.zst` need `zstd` to decompress. Etcher and Rufus",
-        "> handle `.zip` directly; for `.zst` on Windows, use",
-        "> [7-Zip-zstd](https://github.com/mcmilk/7-Zip-zstd) first.",
+        "> Prefer the `.zip` files - Etcher and Rufus read them directly. The `.bz2`",
+        "> variants are the same image at the same size, just less convenient.",
         "",
         "## Recommended / known-good",
         "",
         "These are chosen by hand because someone confirmed they work on specific",
         "hardware. Start here.",
         "",
-        "| Image | Build | Version | Branch | Size | Notes |",
-        "|---|---|---|---|---|---|",
+        "| Image | Build | Version | Kind | Size | Published | Notes |",
+        "|---|---|---|---|---|---|---|",
     ]
-    lines += [row(e) for e in data.get("pinned", [])] or ["| _none yet_ | | | | | |"]
+    lines += [row(e) for e in data.get("pinned", [])] or ["| _none yet_ | | | | | | |"]
     lines += [
         "",
         "## Latest builds",
@@ -198,14 +235,15 @@ def render_docs(data: dict) -> str:
         "vetted - if one fails, try a pinned image above and please open an issue",
         "saying which build and what hardware.",
         "",
-        "**Branch matters.** `main` builds target Steam Deck hardware; `pc` builds",
-        "are Valve's SteamOS-for-PC line. If you are installing on a desktop or",
-        "laptop, a `pc` build is usually the better starting point.",
+        "**Which kind?** `oobe-repair` is the current generation and what you want",
+        "unless you have a reason otherwise. `repair` is the 2023-2025 line, and",
+        "`recovery` is the original 2022 series - both still boot, and an older one",
+        "is worth trying if the newest will not install on your hardware.",
         "",
-        "| Image | Build | Version | Branch | Size | Notes |",
-        "|---|---|---|---|---|---|",
+        "| Image | Build | Version | Kind | Size | Published | Notes |",
+        "|---|---|---|---|---|---|---|",
     ]
-    lines += [row(e) for e in data.get("tracked", [])] or ["| _none_ | | | | | |"]
+    lines += [row(e) for e in data.get("tracked", [])] or ["| _none_ | | | | | | |"]
     lines += [
         "",
         "---",
@@ -222,23 +260,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit", type=int, default=8,
-                    help="how many of the newest builds to track (default: 8)")
+                    help="how many recovery images to track (default: 8)")
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if the catalogue or docs are out of date")
     args = ap.parse_args()
 
     data = load_yaml(DATA)
-    builds = list_builds()
-    print(f":: index lists {len(builds)} builds; tracking newest {args.limit}", file=sys.stderr)
+    images = list_recovery_images()
+    print(f":: index lists {len(images)} recovery images; tracking newest {args.limit}",
+          file=sys.stderr)
 
-    tracked = []
-    for b in reversed(builds[-args.limit:]):
-        e = describe(b)
-        if e:
-            tracked.append(e)
-            print(f"   {b}  {e.get('version','?'):8} {e.get('size_human','?')}", file=sys.stderr)
-    if not tracked:
-        raise SystemExit("!! Refusing to write an empty catalogue - upstream fetch failed.")
+    tracked = images[: args.limit]
+    for e in tracked:
+        print(f"   {e['label']:32} {e['size_human']:>10}  {e['file']}", file=sys.stderr)
     data["tracked"] = tracked
 
     new_yaml, new_docs = dump_yaml(data, DATA), render_docs(data)
@@ -257,7 +291,8 @@ def main() -> int:
     DATA.write_text(new_yaml)
     DOCS.write_text(new_docs)
     changed = (new_yaml != old_yaml) or (new_docs != old_docs)
-    print(f":: {'updated' if changed else 'no change to'} {DATA.name} and {DOCS.name}", file=sys.stderr)
+    print(f":: {'updated' if changed else 'no change to'} {DATA.name} and {DOCS.name}",
+          file=sys.stderr)
     return 0
 
 
