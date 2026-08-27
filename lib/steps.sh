@@ -134,8 +134,10 @@ repair_steps() {
   fmt_fat32 efi "$(diskpart "$FS_EFI_B")"
 
   estat "Freezing rootfs"
-  # Invoked indirectly via the onexit trap array in the entrypoint.
-  # shellcheck disable=SC2329
+  # Invoked indirectly via the onexit trap array in the entrypoint, so static
+  # analysis cannot see the call. Different shellcheck versions flag this as
+  # SC2329 (never invoked) or SC2317 (unreachable); disable both.
+  # shellcheck disable=SC2329,SC2317
   unfreeze() { fsfreeze -u / 2>/dev/null || true; }
   onexit+=(unfreeze)
   cmd fsfreeze -f /

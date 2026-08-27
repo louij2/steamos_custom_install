@@ -64,7 +64,8 @@ jobs:
           truncate -s 64M /tmp/fake.img
           LOOP=$(sudo losetup --find --show /tmp/fake.img)
           echo "loop device: $LOOP"
-          sudo DRY_RUN=1 ./bin/steamos-install --dry-run --yes --disk "$LOOP" all | tee /tmp/out.txt
+          # NOTE: every log line goes to stderr, so 2>&1 is load-bearing here.
+          sudo DRY_RUN=1 ./bin/steamos-install --dry-run --yes --disk "$LOOP" all 2>&1 | tee /tmp/out.txt
           sudo losetup -d "$LOOP"
 
           echo "--- asserting nothing destructive ran ---"
@@ -72,6 +73,11 @@ jobs:
           # sfdisk must be shown but never invoked
           grep -q 'sfdisk' /tmp/out.txt
           ! grep -qi 'Created a new GPT' /tmp/out.txt
+          # the partition suffix must be right for a digit-terminated device
+          grep -q 'loop0p1' /tmp/out.txt
+          ! grep -qE '/dev/loop01\b' /tmp/out.txt
+          # the loopback must still be untouched
+          sudo blkid /tmp/fake.img && { echo "!! image was modified"; exit 1; } || true
           echo "OK"
 
   catalogue:
