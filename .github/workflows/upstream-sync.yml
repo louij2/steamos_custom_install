@@ -45,7 +45,10 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq zstd unzip
+          # e2fsprogs provides debugfs, which is how the home partition is read:
+          # Valve formats it with ext4 casefold and it will not mount without
+          # CONFIG_UNICODE. bzip2 covers the .bz2 recovery artefacts.
+          sudo apt-get install -y -qq zstd unzip bzip2 e2fsprogs
 
       - name: Record the current vendored copy
         id: before

@@ -35,22 +35,29 @@ more likely to be present, and it is what Etcher and Rufus accept directly.
 Valve has moved the file before. If it cannot find it the job fails loudly
 rather than silently producing an empty diff.
 
-> **⚠️ Open question: where the script actually lives.**
->
-> Verified so far, by running the extractor end to end:
->
-> - `/steamdeck/20260826.1000` (OS image) — 4 partitions mounted, **not found**
-> - `/recovery/steamdeck-oobe-repair-20260707.10-3.8.14` — 4 partitions
->   mounted, **not found**
->
-> So `repair_device.sh` is not sitting at the top of a mountable filesystem in
-> either tree. Leading candidates: a btrfs subvolume that is not the default,
-> a nested squashfs/erofs, or a different filename in current images.
->
-> Until this is pinned down the sync workflow will fail loudly rather than
-> silently produce an empty diff — which is the correct failure mode, but it
-> does mean **upstream sync is not yet functional.** The image catalogue and
-> everything else on this branch are unaffected.
+**Where it is, and why that took three attempts to establish:**
+
+`/deck/tools/repair_device.sh`, on the **home** partition (partition 5) of an
+`oobe-repair` image. Valve also ships a `repair_device.sh.orig` beside it.
+
+Two things made this non-obvious, and both are now handled:
+
+1. **Wrong tree.** `/steamdeck/` images have no such file — verified by
+   mounting all four of their partitions.
+2. **The home partition will not mount on many hosts.** Valve formats it with
+   ext4 **`casefold`**, and the kernel refuses:
+   `Filesystem with casefold feature cannot be mounted without CONFIG_UNICODE`.
+   An earlier version of the extractor `continue`d past a failed mount without
+   logging, so it reported "not found" having never looked at the one partition
+   that had the file.
+
+The extractor therefore **falls back to `debugfs`** on any ext filesystem it
+cannot mount. `debugfs` reads ext4 directly and does not care about
+`CONFIG_UNICODE`, so extraction works regardless of the host kernel. Failed
+mounts are now always logged, never skipped silently.
+
+Verified end to end against `steamdeck-oobe-repair-20260707.10-3.8.14`:
+484 lines, `sha256 6305234a6ce0c91d67117ff72cba908b05d34d601d27d1efbe68f7bfa9111d29`.
 
 ## How the approval gate works
 

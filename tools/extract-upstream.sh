@@ -52,6 +52,7 @@ EOD
 
 log()  { echo >&2 ":: $*"; }
 warn() { echo >&2 ";; $*"; }
+ewarn_reason=""
 die()  { echo >&2 "!! $*"; exit 1; }
 
 cleanup() {
@@ -150,31 +151,95 @@ case "$LOCAL" in
   *)     die "Don't know how to decompress $LOCAL" ;;
 esac
 
-# Loop-mount each partition and hunt for the script. Valve has moved it before,
-# so search rather than assuming a path - and say so loudly if it is gone.
+# Known locations, most likely first. On current OOBE repair images the script
+# lives on the *home* partition at /deck/tools/repair_device.sh.
+CANDIDATES=(
+  /deck/tools/repair_device.sh
+  /home/deck/tools/repair_device.sh
+  /tools/repair_device.sh
+  /root/tools/repair_device.sh
+  /usr/share/steamos-repair/repair_device.sh
+)
+
 log "Attaching loop device"
 LOOPDEV="$(losetup --find --show --partscan --read-only "$RAW")"
 log "Loop device: $LOOPDEV"
+# Give the kernel a moment to create the partition nodes.
+sleep 1
 
 FOUND=""
-for part in "$LOOPDEV"p* "$LOOPDEV"; do
+SEARCHED=0
+
+for part in "$LOOPDEV"p*; do
   [[ -b $part ]] || continue
+  SEARCHED=$((SEARCHED + 1))
+  fstype="$(blkid -o value -s TYPE "$part" 2>/dev/null || true)"
+  label="$(blkid -o value -s PARTLABEL "$part" 2>/dev/null || true)"
+  log "Partition $part  type=${fstype:-unknown}  label=${label:-none}"
+
   umount "$WORK/mnt" 2>/dev/null || true
   MOUNTED=""
-  mount -o ro "$part" "$WORK/mnt" 2>/dev/null || continue
-  MOUNTED=1
-  log "Searching $part"
-  hit="$(find "$WORK/mnt" -name 'repair_device.sh' -type f -print -quit 2>/dev/null || true)"
-  if [[ -n $hit ]]; then
-    FOUND="$hit"
-    log "Found: ${hit#"$WORK/mnt"}"
-    break
+
+  if mount -o ro "$part" "$WORK/mnt" 2>/dev/null; then
+    MOUNTED=1
+    hit="$(find "$WORK/mnt" -name 'repair_device.sh' -type f -print -quit 2>/dev/null || true)"
+    if [[ -n $hit ]]; then
+      FOUND="$WORK/found.sh"
+      cp "$hit" "$FOUND"
+      log "  found at ${hit#"$WORK/mnt"}"
+      umount "$WORK/mnt" 2>/dev/null || true
+      break
+    fi
+    log "  mounted, not here"
+    umount "$WORK/mnt" 2>/dev/null || true
+    continue
   fi
+
+  # Mount failed. Do NOT skip silently - an earlier version of this script did,
+  # and it reported "not found" while never looking at the one partition that
+  # actually had the file.
+  #
+  # The usual cause is real and unavoidable on many hosts: Valve formats the
+  # home partition with ext4 `casefold`, which the kernel refuses to mount
+  # without CONFIG_UNICODE. debugfs reads the filesystem directly and does not
+  # care, so extN partitions get a second chance here.
+  ewarn_reason="$(mount -o ro "$part" "$WORK/mnt" 2>&1 | tail -1 || true)"
+  warn "  mount failed: ${ewarn_reason:-unknown}"
+
+  if [[ $fstype != ext* ]]; then
+    warn "  not an ext filesystem - cannot fall back to debugfs, skipping"
+    continue
+  fi
+  if ! command -v debugfs >/dev/null 2>&1; then
+    warn "  debugfs not installed (e2fsprogs) - cannot read this partition"
+    continue
+  fi
+
+  log "  falling back to debugfs (no mount needed)"
+  for cand in "${CANDIDATES[@]}"; do
+    out="$WORK/found.sh"
+    rm -f "$out"
+    if debugfs -R "dump $cand $out" "$part" >/dev/null 2>&1 && [[ -s $out ]]; then
+      FOUND="$out"
+      log "  found at $cand (via debugfs)"
+      break
+    fi
+  done
+  [[ -n $FOUND ]] && break
 done
 
+log "Searched $SEARCHED partition(s)"
+
 [[ -n $FOUND ]] || die "repair_device.sh not found in any partition of $IMAGE.
-Valve may have renamed or removed it. Re-run with --keep and inspect the mount,
-then update this script's search."
+
+Searched $SEARCHED partition(s), including a debugfs fallback for any that
+would not mount. Valve may have renamed or moved it. Re-run with --keep, then
+inspect with:
+
+  losetup --find --show --partscan --read-only <work>/recovery.img
+  debugfs -R 'ls -l /deck/tools' /dev/loopNp5
+
+and add the new path to CANDIDATES in this script."
 
 mkdir -p "$(dirname "$OUT")"
 install -m 0644 "$FOUND" "$OUT"

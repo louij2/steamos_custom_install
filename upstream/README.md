@@ -8,6 +8,9 @@ we can see what Valve changes.
 - **Do not edit these files by hand.** They are overwritten by
   `tools/extract-upstream.sh`.
 - `VERSION` records the recovery build the copy came from.
+- Extracted from `/deck/tools/repair_device.sh` on the **home** partition of a
+  `steamdeck-oobe-repair-*` image — read with `debugfs`, because that partition
+  uses ext4 `casefold` and will not mount without `CONFIG_UNICODE`.
 - CI deliberately does not lint this directory — it is not our code, and
   "fixing" it would defeat the purpose of a clean diff.
 
