@@ -13,6 +13,7 @@ This tool lets you install or repair SteamOS using **Valve’s official recovery
 - Waits for the new partition devices to appear before formatting them
 - Skips the Steam Deck BIOS and controller firmware flashing by default, which is the right call on non-Deck hardware
 - A [catalogue of Valve's recovery images](docs/images.md) with notes on which ones work where
+- Tested end to end by **installing into a VM from Valve's real recovery image**, not just linted ([details](tools/vm-test/README.md))
 
 > 🧭 **New to Linux or the terminal?** Follow the
 > **[step-by-step guide](docs/step-by-step-guide.md)** instead of this page. It
@@ -254,7 +255,8 @@ The full list, kept as a review checklist for upstream changes, is in
 | `upstream/`                   | Valve's pristine script, vendored as a diff baseline — never executed |
 | `data/images.yaml`            | Recovery image catalogue + hand-written end-user notes |
 | `tools/`                      | Upstream extraction and catalogue refresh tooling |
-| `tests/`                      | `bats` unit tests |
+| `tests/`                      | `bats` unit tests, plus a real-block-device integration test |
+| `tools/vm-test/`              | End-to-end test: installs into a VM from Valve's real recovery image |
 | `docs/step-by-step-guide.md`  | Beginner walkthrough with annotated prompts    |
 | `docs/images.md`              | Generated image catalogue |
 | `docs/upstream-sync.md`       | How Valve's changes are tracked, and our deliberate divergences |
