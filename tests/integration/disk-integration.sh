@@ -128,11 +128,17 @@ else
   fi
 fi
 
+# NOTE: require_tools ends in `die`, which is a plain `exit`. Call it inside a
+# command substitution so that exit ends the subshell and not this script.
 shim="$(mktemp -d)"; printf '#!/bin/sh\n' > "$shim/unrunnable"; chmod 644 "$shim/unrunnable"
-if PATH="$shim:$PATH" require_tools unrunnable >/dev/null 2>&1; then
+if out="$(PATH="$shim:$PATH" require_tools unrunnable 2>&1)"; then
   bad "require_tools accepted a non-executable binary"
 else
-  ok "require_tools rejected a present-but-non-executable binary"
+  if [[ "$out" == *unrunnable* ]]; then
+    ok "require_tools rejected a present-but-non-executable binary"
+  else
+    bad "rejected it, but did not name it: $out"
+  fi
 fi
 rm -rf "$shim"
 
