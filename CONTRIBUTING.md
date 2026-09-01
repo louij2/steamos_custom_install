@@ -13,7 +13,7 @@ repair_device.sh        compatibility shim -> bin/steamos-install
 upstream/               Valve's pristine script. Never executed, never edited
 tools/                  upstream extraction + image catalogue refresh
 data/images.yaml        image catalogue; `pinned` is hand-written
-tests/                  bats
+tests/                  bats; helper.bash finds a bash 4.4+ to run under
 ```
 
 ## Before you open a PR
@@ -40,6 +40,22 @@ Two related traps, both of which have bitten this repo already:
 - **Anything inside the `EXIT` trap must be errexit-safe.** A bare failing test
   in there re-triggers `ERR` and replaces the real error message with a
   meaningless one from the handler. Use `|| continue`, not `&&`.
+- **Preflight, don't discover.** Anything environmental — a binary that must
+  exist, a disk that must not be mounted, a device node that must have appeared
+  — gets checked before the destructive work, with a message that says what to
+  do about it. Both #9 and #10 were environmental failures surfaced as a bare
+  exit code halfway through an install. See `require_tools`, `release_disk` and
+  `settle_disk` in `lib/disk.sh`.
+
+## Testing on macOS
+
+The installer needs **bash 4.4+** (`${var@Q}`, `${var,,}`) and checks for it at
+startup. macOS ships bash 3.2, so `tests/helper.bash` looks for a modern bash
+and **skips** the tests that execute the entrypoint if it can't find one.
+
+Take those skips seriously: bash 3.2 does not error on `${*@Q}`, it silently
+degrades it to an unquoted expansion. A test written against that output passes
+locally and fails on CI. `brew install bash` if you want the full suite.
 
 ## Adding a note about an image
 
