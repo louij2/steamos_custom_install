@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # Tests for lib/disk.sh - partition naming and target validation.
 
+load helper
+
 setup() {
   REPO="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   export LIBDIR="$REPO/lib"
@@ -76,4 +78,88 @@ setup() {
   [[ "$output" == *"/dev/nvme0n1p1:"* ]]
   [[ "$output" == *"/dev/nvme0n1p8:"* ]]
   [[ "$output" != *"/dev/nvme0n11:"* ]]
+}
+
+# --- preflight: tools, busy disks, settling (issues #9 and #10) -------------
+
+@test "tools_for_target: every install target requires steamos-chroot" {
+  for t in all system chroot; do
+    [[ "$(tools_for_target "$t")" == *"steamos-chroot"* ]]
+  done
+}
+
+@test "tools_for_target: 'all' requires sfdisk, and 'sanitize' does not" {
+  [[ "$(tools_for_target all)" == *"sfdisk"* ]]
+  [[ "$(tools_for_target sanitize)" != *"sfdisk"* ]]
+  [[ "$(tools_for_target sanitize)" == *"nvme"* ]]
+}
+
+@test "require_tools: passes when everything is present" {
+  run require_tools ls cat
+  [ "$status" -eq 0 ]
+}
+
+@test "require_tools: names the missing tool rather than failing with 127 later" {
+  # The whole point of issue #9: exit 127 partway through said nothing useful.
+  run require_tools ls definitely-not-a-real-binary
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"definitely-not-a-real-binary"* ]]
+  [[ "$output" == *"PATH is:"* ]]
+}
+
+@test "require_tools: explains that steamos-chroot means the wrong boot media" {
+  run require_tools steamos-chroot-definitely-absent steamos-chroot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"recovery image"* ]]
+}
+
+@test "require_tools: a dry run warns but does not abort" {
+  DRY_RUN=1 run require_tools definitely-not-a-real-binary
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry run"* ]]
+}
+
+@test "disk_partitions: a disk with no partitions in sysfs yields nothing" {
+  run disk_partitions /dev/definitely-not-a-real-disk
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "disk_in_use: reports nothing for a disk that does not exist" {
+  run disk_in_use /dev/definitely-not-a-real-disk
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "release_disk: a free disk is a no-op, not an error" {
+  run release_disk /dev/definitely-not-a-real-disk
+  [ "$status" -eq 0 ]
+}
+
+@test "settle_disk: skipped under DRY_RUN so the dry path stays runnable" {
+  DRY_RUN=1 DISK=/dev/definitely-not-a-real-disk DISK_SUFFIX="" run settle_disk /dev/definitely-not-a-real-disk 8
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry run"* ]]
+}
+
+@test "the preflight helpers are errexit-safe" {
+  # These run under 'set -euEo pipefail' in the real entrypoint. A helper that
+  # returns non-zero on the ordinary path would abort the install with the
+  # meaningless trap output this fork exists to eliminate.
+  require_modern_bash
+  run "$BASH44" -c '
+    set -euEo pipefail
+    export LIBDIR="'"$LIBDIR"'"
+    source "$LIBDIR/disk.sh"
+    DRY_RUN=1
+    require_tools ls cat
+    release_disk /dev/definitely-not-a-real-disk
+    settle_disk /dev/definitely-not-a-real-disk 8
+    disk_partitions /dev/definitely-not-a-real-disk
+    disk_in_use /dev/definitely-not-a-real-disk
+    disk_holders /dev/definitely-not-a-real-disk
+    echo REACHED-END
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"REACHED-END"* ]]
 }

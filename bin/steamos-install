@@ -12,6 +12,22 @@
 # so a command failing inside one aborts the script with no output at all.
 set -euEo pipefail
 
+# This script uses ${var@Q} and ${var,,}, so it needs bash 4.4 or newer. Running
+# it with `sh script` or on an ancient bash otherwise fails with a syntax error
+# that says nothing about the real problem.
+if [[ -z ${BASH_VERSINFO:-} ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  echo >&2 "!! This installer needs bash 4.4 or newer (found: ${BASH_VERSION:-not bash})."
+  echo >&2 "!! Run it as 'sudo ./repair_device.sh <target>', not 'sh ./repair_device.sh'."
+  exit 1
+fi
+
+# sudo replaces PATH with its own secure_path, which on some distributions does
+# not include /usr/sbin - where sfdisk, mkfs.* and friends live. That is how a
+# perfectly present tool turns into "exit 127" partway through an install
+# (issue #9). Put the standard admin directories back before anything runs.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export PATH
+
 PROGNAME="${0##*/}"
 SCRIPTDIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export LIBDIR="${LIBDIR:-$SCRIPTDIR/../lib}"
@@ -99,8 +115,21 @@ fi
 err() {
   local rc=$?
   echo >&2
-  eerr "Failed at line ${BASH_LINENO[0]} (exit $rc): ${BASH_COMMAND}"
+  eerr "Failed at ${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]} (exit $rc)"
+  # BASH_COMMAND inside cmd() is the literal string "$@", which is what made
+  # issue #10 unactionable. Prefer the command cmd() recorded.
+  if [[ -n ${LAST_CMD:-} ]]; then
+    eerr "Last command run: $LAST_CMD"
+  else
+    eerr "Failing command: ${BASH_COMMAND}"
+  fi
+  case $rc in
+    127) eerr "Exit 127 means the command was not found. PATH is: $PATH" ;;
+    126) eerr "Exit 126 means the command was found but is not executable." ;;
+  esac
+  stacktrace 1
   eerr "Imaging error occurred, see above and restart the process."
+  eerr "Please include everything above if you open an issue."
   [[ -z ${HANG_ON_ERROR:-} ]] || sleep infinity
   exit "$rc"
 }
@@ -128,6 +157,12 @@ fi
 validate_disk "$DISK"
 DISK_SUFFIX="$(disk_suffix "$DISK")"
 export DISK DISK_SUFFIX
+
+# Check every external tool this target needs before offering to destroy
+# anything, so a missing binary is named up front instead of surfacing as a
+# bare exit 127 halfway through (issue #9).
+# shellcheck disable=SC2046
+require_tools $(tools_for_target "$TARGET")
 
 estat "Target disk: $DISK"
 estat "Will use partitions like: ${DISK}${DISK_SUFFIX}1, ${DISK}${DISK_SUFFIX}2, ..."

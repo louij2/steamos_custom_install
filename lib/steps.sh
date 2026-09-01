@@ -81,14 +81,23 @@ stage_controller_update() {
 
 # Reinstall a fresh SteamOS copy. Driven by the writeX flags set by the caller.
 repair_steps() {
+  # Nothing below can get exclusive access to a disk whose partitions the
+  # desktop has auto-mounted, so clear that up front rather than letting sfdisk
+  # or mkfs fail with a message that never mentions mounting (issues #9, #10).
+  release_disk "$DISK"
+
   if [[ ${writePartitionTable:-0} = 1 ]]; then
     estat "Write known partition table"
     if [[ -n ${DRY_RUN:-} ]]; then
       showcmd_unquoted "sfdisk $DISK <<< (partition table)"
       partition_table >&2
     else
-      partition_table | sfdisk "$DISK"
+      # --wipe always clears stale filesystem/RAID signatures that would
+      # otherwise make sfdisk stop and ask an interactive question.
+      partition_table | sfdisk --wipe always --wipe-partitions always "$DISK"
     fi
+    # The kernel does not publish the new partition nodes synchronously.
+    settle_disk "$DISK" 8
 
   elif [[ ${writeOS:-0} = 1 || ${writeHome:-0} = 1 ]]; then
     # Verify partition settings before a partial repair. After writing the

@@ -8,6 +8,9 @@ This tool lets you install or repair SteamOS using **Valve’s official recovery
 - Fixes the partition naming issue (`p` vs no-`p`) on non-NVMe drives
 - Works with or without a graphical session — falls back to terminal prompts when the zenity dialogs can't be shown
 - `--dry-run` shows you every destructive command **without running any of them**
+- Checks every tool it needs **before** doing anything destructive, and names what is missing
+- Unmounts the target disk for you, so `sfdisk` can actually get exclusive access
+- Waits for the new partition devices to appear before formatting them
 - Skips the Steam Deck BIOS and controller firmware flashing by default, which is the right call on non-Deck hardware
 - A [catalogue of Valve's recovery images](docs/images.md) with notes on which ones work where
 
@@ -164,9 +167,56 @@ You can also force terminal prompts at any time with `NOZENITY=1`.
 
 ### The script fails part-way through
 
-Errors are now reported with the line number and the exact command that failed,
-e.g. `!! Failed at line 273 (exit 127): sfdisk "$DISK"`. Include that line when
-opening an issue — it says precisely where things went wrong.
+Errors are reported with the file and line, the **exact command that failed**,
+and a call stack showing how it got there. Paste the whole block when opening an
+issue.
+
+Earlier versions reported a failure inside the command wrapper as
+`!! Failed at line 137 (exit 1): "$@"`, which pointed at the wrapper rather than
+the step that broke. That is fixed.
+
+### "Checking that no-one is using this disk right now ... FAILED"
+
+`sfdisk` says this when something still has the target disk open — almost always
+because the recovery image's desktop auto-mounted a partition on it the moment
+you plugged it in. Reformatting the drive beforehand does not help; mounting it
+to check is what causes it.
+
+The installer now unmounts the target disk itself before partitioning, so this
+should not happen any more. If it still does, the error names what is holding
+the disk. To check by hand:
+
+```bash
+lsblk -o NAME,SIZE,MOUNTPOINTS /dev/sda
+```
+
+and unmount anything with a mountpoint:
+
+```bash
+sudo umount -R /dev/sda1
+```
+
+If the disk is held by LUKS or LVM rather than a plain mount, close that first
+(`sudo cryptsetup close <name>`, or `sudo vgchange -an`).
+
+### "exit 127" partway through
+
+Exit 127 means a command was **not found**. The two usual causes:
+
+- `sudo` replaced `PATH` with a `secure_path` that has no `/usr/sbin`, which is
+  where `sfdisk` and `mkfs.*` live. The installer now puts the admin
+  directories back on `PATH` itself.
+- You are not booted from a **SteamOS recovery image**. An ordinary Linux live
+  USB has no `steamos-chroot`, and this script cannot install SteamOS without
+  it. The installer now checks for every tool it needs up front and names the
+  missing one instead of failing halfway through.
+
+### Formatting fails immediately after the partition table is written
+
+The kernel does not publish `/dev/sda1`, `/dev/sda2`… the instant `sfdisk`
+returns. On USB and SATA SSDs it can lag by a second or more, and `mkfs` then
+fails with a bare `exit 1`. The installer now re-reads the partition table and
+waits (up to 30s) for every partition node to appear before formatting anything.
 
 ### "does not exist" / "is not a block device"
 
@@ -182,7 +232,9 @@ Pass a **whole disk**, not a partition — `/dev/sda`, not `/dev/sda1`. Run
 | Hardcoded to `/dev/nvme0n1pX`      | Prompts for any disk (e.g. `/dev/sda`)    |
 | Crashes on external drives         | Handles non-NVMe partition naming         |
 | Requires zenity + a desktop session | Falls back to terminal prompts            |
-| Hangs forever on error             | Reports the failing line and exits        |
+| Hangs forever on error             | Reports the failing command, line and call stack, then exits |
+| Fails at exit 127/1 with no context | Preflights every required tool and names what is missing |
+| Trips over auto-mounted partitions | Unmounts the target disk before partitioning |
 | Wipes disks with no confirmation   | Prompts before doing anything destructive |
 | No way to preview                  | `--dry-run` prints every command, runs none |
 | Flashes Deck BIOS + controller FW  | Skipped unless you opt in — safer on non-Deck hardware |

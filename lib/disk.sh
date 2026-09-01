@@ -120,3 +120,177 @@ ${DISK}${DISK_SUFFIX}7: name="var-B",    size=   256MiB, type=4D21B016-B534-45C2
 ${DISK}${DISK_SUFFIX}8: name="home",                     type=933AC7E1-2EB4-4F13-B844-0E14E2AEF915
 END_PARTITION_TABLE
 }
+
+# ---------------------------------------------------------------------------
+# Preflight: tools, busy disks, and settling after a partition-table write.
+#
+# These exist because of two field reports (#9, #10) that both came down to the
+# same thing: a command failing for an environmental reason, reported as a bare
+# exit code with no indication of what to do about it.
+# ---------------------------------------------------------------------------
+
+# External binaries each target needs. steamos-chroot is the tell for "you are
+# not running this from a SteamOS recovery image", which is by far the most
+# common way this script is misused.
+tools_for_target() {
+  local target="$1"
+  local -a common=(lsblk blkid findmnt udevadm)
+  case "$target" in
+    all)      echo "${common[*]} sfdisk mkfs.ext4 mkfs.vfat tune2fs dd btrfstune btrfs fsfreeze steamos-chroot" ;;
+    system)   echo "${common[*]} mkfs.ext4 mkfs.vfat dd btrfstune btrfs fsfreeze steamos-chroot" ;;
+    home)     echo "${common[*]} mkfs.ext4 tune2fs" ;;
+    chroot)   echo "${common[*]} steamos-chroot" ;;
+    sanitize) echo "${common[*]} nvme" ;;
+    *)        echo "${common[*]}" ;;
+  esac
+}
+
+# Fail early, and by name, when something we are going to call is not there.
+# Without this a missing binary surfaces as "exit 127" from whichever line
+# happened to reach it first - which is exactly what issue #9 reported.
+require_tools() {
+  local -a missing=()
+  local t
+  for t in "$@"; do
+    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+  done
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+
+  eerr "Missing required command(s): ${missing[*]}"
+  eerr "PATH is: $PATH"
+  if [[ " ${missing[*]} " == *" steamos-chroot "* ]]; then
+    eerr "steamos-chroot is only present on Valve's SteamOS recovery image."
+    eerr "Boot the recovery USB and run this from the Konsole there - it cannot"
+    eerr "install SteamOS from an ordinary Linux live USB."
+  fi
+  if [[ -n ${DRY_RUN:-} ]]; then
+    ewarn "Continuing anyway because this is a dry run."
+    return 0
+  fi
+  die "Cannot continue with tools missing."
+}
+
+# Echo every partition device belonging to a whole disk, one per line.
+#   $1 whole-disk device path
+disk_partitions() {
+  local base="${1##*/}" p
+  for p in "/sys/class/block/$base/$base"*; do
+    [[ -e "$p/partition" ]] || continue
+    echo "/dev/${p##*/}"
+  done
+  return 0
+}
+
+# Echo "device mountpoint" for every mounted partition of the disk, plus any
+# partition that is in use as swap. Empty output means the disk is free.
+#   $1 whole-disk device path
+disk_in_use() {
+  local part mnt
+  for part in $(disk_partitions "$1"); do
+    while read -r mnt; do
+      [[ -n $mnt ]] && echo "$part $mnt"
+    done < <(findmnt -rno TARGET --source "$part" 2>/dev/null || true)
+    if grep -qE "^${part}[[:space:]]" /proc/swaps 2>/dev/null; then
+      echo "$part [swap]"
+    fi
+  done
+  return 0
+}
+
+# Echo anything holding a partition open through device-mapper or md - LUKS,
+# LVM, a stale RAID member. We report these rather than tearing them down,
+# because doing so blind can take out a disk the user did not mean to touch.
+disk_holders() {
+  local part h
+  for part in $(disk_partitions "$1"); do
+    for h in "/sys/class/block/${part##*/}/holders"/*; do
+      [[ -e "$h" ]] || continue
+      echo "$part -> /dev/${h##*/}"
+    done
+  done
+  return 0
+}
+
+# Unmount everything on the target disk so that sfdisk and mkfs can get the
+# exclusive access they need.
+#
+# This is the direct cause of sfdisk's "Checking that no-one is using this disk
+# right now ... FAILED". The recovery image's desktop auto-mounts partitions on
+# any attached drive, so by the time the user runs this the target is very often
+# already mounted - and the failure message never says so.
+#   $1 whole-disk device path
+release_disk() {
+  local disk="$1"
+  local -a busy=()
+  local line
+  while IFS= read -r line; do
+    [[ -n $line ]] && busy+=("$line")
+  done < <(disk_in_use "$disk")
+  [[ ${#busy[@]} -eq 0 ]] && return 0
+
+  estat "Target disk has mounted partitions; releasing them first"
+  local entry part mnt
+  for entry in "${busy[@]}"; do
+    part="${entry%% *}"; mnt="${entry#* }"
+    if [[ $mnt == "[swap]" ]]; then
+      cmd swapoff "$part" || ewarn "swapoff $part failed"
+    else
+      einfo "unmounting $part from $mnt"
+      cmd umount -R "$mnt" || cmd umount -l "$mnt" || ewarn "umount $mnt failed"
+    fi
+  done
+
+  # Re-check rather than trusting the umount exit codes.
+  busy=()
+  while IFS= read -r line; do
+    [[ -n $line ]] && busy+=("$line")
+  done < <(disk_in_use "$disk")
+  [[ ${#busy[@]} -eq 0 ]] && return 0
+
+  eerr "$disk is still in use after unmounting:"
+  printf '     %s\n' "${busy[@]}" >&2
+  local -a held=()
+  while IFS= read -r line; do
+    [[ -n $line ]] && held+=("$line")
+  done < <(disk_holders "$disk")
+  if [[ ${#held[@]} -gt 0 ]]; then
+    eerr "It is also held open by device-mapper/md:"
+    printf '     %s\n' "${held[@]}" >&2
+    eerr "Close those first, e.g. 'sudo cryptsetup close <name>' or 'sudo vgchange -an'."
+  fi
+  die "Cannot get exclusive access to $disk. Unmount it (see 'lsblk') and retry."
+}
+
+# Make the kernel re-read the partition table and wait for the new device nodes
+# to actually appear.
+#
+# Without this, mkfs runs against a partition node that does not exist yet and
+# dies with a bare exit 1 - the failure reported in issue #10. It is invisible
+# on a fast internal NVMe and reproducible on USB and SATA SSDs, which is what
+# this fork is mostly used with.
+#   $1 whole-disk device path  $2 number of partitions to wait for
+settle_disk() {
+  local disk="$1" want="${2:-8}"
+  [[ -n ${DRY_RUN:-} ]] && { einfo "dry run: skipping partition settle"; return 0; }
+
+  estat "Re-reading the partition table and waiting for the device nodes"
+  sync
+  partprobe "$disk" >/dev/null 2>&1 || blockdev --rereadpt "$disk" >/dev/null 2>&1 || true
+  udevadm settle --timeout=30 >/dev/null 2>&1 || true
+
+  # Bounded wait: poll for the nodes rather than sleeping a fixed guess.
+  local deadline=$(( SECONDS + 30 )) i missing
+  while (( SECONDS < deadline )); do
+    missing=""
+    for (( i = 1; i <= want; i++ )); do
+      [[ -b "$(diskpart "$i")" ]] || missing="$(diskpart "$i")"
+    done
+    [[ -z $missing ]] && { einfo "all $want partitions present"; return 0; }
+    sleep 1
+  done
+
+  eerr "Timed out after 30s waiting for $missing to appear."
+  eerr "The partition table was written but the kernel has not published the"
+  eerr "partitions. Unplug and replug the drive, or reboot, and run this again."
+  die "Partition devices did not appear on $disk."
+}

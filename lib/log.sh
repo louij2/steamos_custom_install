@@ -31,13 +31,33 @@ die() {
 showcmd_unquoted() { echo >&2 "$(sh_c 30 1)+$(sh_c) $*"; }
 showcmd() { showcmd_unquoted "${@@Q}"; }
 
+# The last command cmd() was asked to run. The ERR trap reports this, because
+# BASH_COMMAND inside cmd() is the literal string "$@" and is useless to a user
+# trying to work out which step of the install actually broke.
+LAST_CMD=""
+
 # Run a command, echoing it first. Honours DRY_RUN=1, which is what makes the
 # destructive paths testable without a disk attached.
 cmd() {
+  # shellcheck disable=SC2034  # read by the ERR trap in bin/steamos-install
+  LAST_CMD="${*@Q}"
   showcmd "$@"
   if [[ -n ${DRY_RUN:-} ]]; then
     echo >&2 "$(sh_c 33 1);;$(sh_c) dry-run: not executed"
     return 0
   fi
   "$@"
+}
+
+# Print the call stack, innermost frame first. The ERR trap uses this: without
+# it a failure inside cmd() reports only the wrapper's own line and the literal
+# text "$@", which tells the user nothing about what actually failed.
+stacktrace() {
+  local skip="${1:-1}" i
+  for (( i = skip; i < ${#FUNCNAME[@]}; i++ )); do
+    local func="${FUNCNAME[i]:-MAIN}"
+    local src="${BASH_SOURCE[i]:-?}"
+    local line="${BASH_LINENO[i-1]:-?}"
+    echo >&2 "     at ${func}() ${src##*/}:${line}"
+  done
 }
