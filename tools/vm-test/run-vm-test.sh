@@ -54,6 +54,25 @@ TARGET="$WORKDIR/target.img"
 CONSOLE="$WORKDIR/console.log"
 
 mkdir -p "$WORKDIR"
+
+# The work directory holds ~21 GB of disk images. On some hosts the obvious
+# temp locations are RAM-backed - Unraid's whole rootfs is, so the default
+# /var/tmp there would quietly consume 21 GB of memory. Refuse rather than
+# discover that at 3am.
+wd_fs="$(stat -f -c %T "$WORKDIR" 2>/dev/null || echo unknown)"
+case "$wd_fs" in
+  tmpfs|ramfs|rootfs)
+    die "$WORKDIR is on a RAM-backed filesystem ($wd_fs) and needs ~21 GB.
+   Pass --workdir with a path on real storage, e.g.
+     sudo $0 --workdir /mnt/user/isos/steamos-vm-test" ;;
+esac
+
+wd_free_gb="$(( $(df -Pk "$WORKDIR" | awk 'NR==2 {print $4}') / 1024 / 1024 ))"
+if [[ $wd_free_gb -lt 25 ]]; then
+  die "$WORKDIR has only ${wd_free_gb} GB free; this needs about 25 GB"
+fi
+info "work directory: $WORKDIR (${wd_fs}, ${wd_free_gb} GB free)"
+
 cd "$WORKDIR"
 
 # --- teardown -------------------------------------------------------------
