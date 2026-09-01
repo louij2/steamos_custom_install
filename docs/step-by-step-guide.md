@@ -126,6 +126,11 @@ So in the example above, to install to the 1 TB SATA drive you'd use `/dev/sda`
 Still unsure which is which? Unplug the drive you're *not* installing to, run
 `lsblk` again, and see which line disappeared.
 
+> 💡 If your target drive shows a **MOUNTPOINTS** entry, the desktop has mounted
+> it. That used to make the install fail with "Checking that no-one is using this
+> disk right now ... FAILED". The installer now unmounts it for you, so you can
+> leave it alone.
+
 ---
 
 ## Step 6 — (Recommended) Protect your internal drive
@@ -200,6 +205,8 @@ reachable. Then it runs, printing progress as it goes:
 
 ```
 :: Write known partition table
+:: Re-reading the partition table and waiting for the device nodes
+:: all 8 partitions present
 :: Creating var partitions
 :: Creating home partition...
 :: Remove the reserved blocks on the home partition...
@@ -237,14 +244,42 @@ nightly recovery image at the bottom of the [readme](../readme.md).
 
 ## 🆘 If something goes wrong
 
-**The script stops and prints a line like this:**
+**The script stops and prints a block like this:**
 ```
-!! Failed at line 273 (exit 127): sfdisk "$DISK"
-!! Imaging error occured, see above and restart process.
+!! Failed at steps.sh:114 (exit 1)
+!! Last command run: mkfs.ext4 -F -O casefold -T huge -L home /dev/sda8
+     at repair_steps() steps.sh:114
+     at main() steamos-install:150
+!! Imaging error occurred, see above and restart the process.
+!! Please include everything above if you open an issue.
 ```
-That's the script telling you exactly where it broke. Copy that line into a
+That's the script telling you exactly which command broke and how it got there.
+Copy **the whole block** into a
 [new issue](https://github.com/louij2/steamos_custom_install/issues) — it's the
 single most useful thing you can include.
+
+**"Checking that no-one is using this disk right now ... FAILED"** — something
+still has the target disk open. The desktop in the recovery image quietly mounts
+partitions on any drive you plug in, and that is enough to block it. Reformatting
+the drive beforehand does not help — opening it in the file manager to check is
+often what causes it.
+
+The installer now unmounts the target for you, so you should not see this. If you
+do, look at what is mounted:
+```bash
+lsblk -o NAME,SIZE,MOUNTPOINTS /dev/sda
+```
+and unmount anything with a mountpoint next to it:
+```bash
+sudo umount -R /dev/sda1
+```
+
+**"Missing required command"** — the script checks for everything it needs before
+touching your disk. If it names `steamos-chroot`, you are not booted from a
+**SteamOS recovery image** — an ordinary Linux live USB cannot install SteamOS.
+Go back to [Step 1](#step-1--download-the-recovery-image).
+
+**"exit 127"** — means a command was not found; usually the same cause as above.
 
 **Nothing happens after you type YES** — you're on an old copy of the script.
 Run `cd steamos_custom_install && git pull` and try again. (Fixed in
