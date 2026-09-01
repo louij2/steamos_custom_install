@@ -126,7 +126,13 @@ mount -o rw "$ROOTPART" "$MNT"
 # not a mount option, so `mount -o rw` alone is not enough.
 btrfs property set -ts "$MNT" ro false
 
-rm -rf "$MNT/usr/local/steamos_custom_install" "$MNT/usr/local/steamos-vm-test"
+# Clear any harness left behind by an earlier run against this same image.
+# Two enabled units means two harnesses racing for the target disk, and the
+# install fails in a way that looks like a product bug but is not.
+rm -f "$MNT"/etc/systemd/system/multi-user.target.wants/*steamos*test*.service
+rm -f "$MNT"/etc/systemd/system/*steamos*test*.service
+rm -rf "$MNT/usr/local/steamos_custom_install" "$MNT/usr/local/steamos-vm-test" \
+       "$MNT/usr/local/steamos_custom_install-test"
 mkdir -p "$MNT/usr/local/steamos_custom_install" "$MNT/usr/local/steamos-vm-test"
 tar -C "$REPO_ROOT" -cf - \
     --exclude='.git' --exclude='*.img' --exclude='*.zip' . \
