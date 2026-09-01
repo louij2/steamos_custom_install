@@ -1,0 +1,48 @@
+<domain type='kvm'>
+  <name>@NAME@</name>
+  <description>Throwaway VM: end-to-end test of the custom SteamOS installer</description>
+  <memory unit='GiB'>@MEM@</memory>
+  <currentMemory unit='GiB'>@MEM@</currentMemory>
+  <vcpu placement='static'>@VCPU@</vcpu>
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <loader readonly='yes' type='pflash' format='raw'>@OVMF_CODE@</loader>
+    <nvram format='raw' template='@OVMF_VARS@'>@NVRAM@</nvram>
+  </os>
+  <features><acpi/><apic/></features>
+  <cpu mode='host-passthrough' check='none' migratable='on'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <!-- the installer offers to reboot when it finishes; do not loop -->
+  <on_reboot>destroy</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>@EMULATOR@</emulator>
+    <!-- vda: Valve's recovery image, booted from -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw' cache='writeback'/>
+      <source file='@RECOVERY@'/>
+      <target dev='vda' bus='virtio'/>
+      <boot order='1'/>
+    </disk>
+    <!-- vdb: the blank disk the installer writes to -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw' cache='writeback'/>
+      <source file='@TARGET@'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+    <controller type='usb' index='0' model='qemu-xhci'/>
+    <!-- the guest harness reports here; libvirt writes it to a file -->
+    <serial type='file'>
+      <source path='@CONSOLE@'/>
+      <target type='isa-serial' port='0'><model name='isa-serial'/></target>
+    </serial>
+    <console type='file'>
+      <source path='@CONSOLE@'/>
+      <target type='serial' port='0'/>
+    </console>
+    <graphics type='vnc' port='-1' autoport='yes'/>
+    <video><model type='qxl'/></video>
+    <memballoon model='none'/>
+  </devices>
+</domain>

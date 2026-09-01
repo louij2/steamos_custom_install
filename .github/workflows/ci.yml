@@ -80,6 +80,18 @@ jobs:
           sudo blkid /tmp/fake.img && { echo "!! image was modified"; exit 1; } || true
           echo "OK"
 
+  disk-integration:
+    name: real block device integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Exercise the issue #9 / #10 code paths against a loop device
+        # The bats suite cannot reach these: release_disk and settle_disk only
+        # misbehave with a real disk, real mounts and real udev. This needs
+        # nothing from SteamOS, so it runs on every push.
+        run: sudo bash tests/integration/disk-integration.sh
+
   catalogue:
     name: image catalogue is valid
     runs-on: ubuntu-latest

@@ -1,0 +1,46 @@
+name: VM end-to-end test
+
+# Boots Valve's real recovery image in a VM and installs SteamOS onto a virtual
+# disk, end to end. This is the only test that covers steamos-chroot, the btrfs
+# rootfs copy and the bootloader install - and it is how the two bugs fixed in
+# c4d9b23 were found.
+#
+# It needs KVM, ~25 GB of disk and about 30 minutes, so it does NOT run on
+# GitHub's hosted runners. Point it at a self-hosted runner with KVM, or run
+# tools/vm-test/run-vm-test.sh by hand on any Linux box with libvirt:
+#
+#   sudo tools/vm-test/run-vm-test.sh
+#
+# See tools/vm-test/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Recovery build to test against (blank = the pinned default)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  vm-test:
+    name: install into a VM from the real recovery image
+    # Requires a self-hosted runner labelled 'kvm'. With no such runner the job
+    # simply stays queued and is cancelled - it never reports a false failure.
+    runs-on: [self-hosted, linux, kvm]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the end-to-end VM test
+        run: sudo tools/vm-test/run-vm-test.sh ${{ inputs.build && format('--build {0}', inputs.build) || '' }}
+
+      - name: Publish the guest console log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vm-console-log
+          path: /var/tmp/steamos-vm-test/console.log
+          if-no-files-found: warn

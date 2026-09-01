@@ -16,15 +16,33 @@ data/images.yaml        image catalogue; `pinned` is hand-written
 tests/                  bats; helper.bash finds a bash 4.4+ to run under
 ```
 
+## The three test tiers
+
+| Tier | Command | Covers | Runs |
+|---|---|---|---|
+| Unit | `bats tests/` | argument handling, partition naming, preflight logic, error reporting | every push |
+| Integration | `sudo bash tests/integration/disk-integration.sh` | a **real** block device: mounted-disk release, partition settling, `mkfs` right after `sfdisk` | every push (Linux + root) |
+| End-to-end | `sudo tools/vm-test/run-vm-test.sh` | a VM booted from Valve's real recovery image: `steamos-chroot`, the btrfs rootfs copy, the bootloader | on demand |
+
+The tiers exist because each one reaches something the one above cannot. The
+integration tier is where the issue #9 and #10 *mechanics* live — they only
+misbehave with real mounts and real udev. The VM tier is the only place the
+SteamOS-specific half of the installer runs at all, and it is where two real
+bugs were found that every other tier passed. See
+[tools/vm-test/README.md](tools/vm-test/README.md).
+
 ## Before you open a PR
 
 ```bash
-shellcheck -x bin/steamos-install lib/*.sh tools/*.sh repair_device.sh
+shellcheck -x bin/steamos-install lib/*.sh tools/*.sh tools/vm-test/*.sh tests/integration/*.sh repair_device.sh
 bats tests/
+sudo bash tests/integration/disk-integration.sh                  # Linux only
 sudo ./bin/steamos-install --dry-run --yes --disk /dev/sdX all   # eyeball it
 ```
 
-CI runs all of that, plus a dry run against a loopback device.
+CI runs all of that, plus a dry run against a loopback device. Run the VM tier
+too if you touched `lib/steps.sh` or anything to do with tools, mounts or
+partition devices.
 
 ## The one rule that matters
 
