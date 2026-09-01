@@ -113,3 +113,22 @@ setup() {
   [[ "$output" == *"/usr/sbin"* ]]
   [[ "$output" == *"/sbin"* ]]
 }
+
+@test "a failing sfdisk is attributed to sfdisk, not to the table writer" {
+  # Regression: `partition_table | sfdisk` meant a dying sfdisk sent SIGPIPE to
+  # the writer, and the ERR trap reported the writer instead - hiding the cause.
+  require_modern_bash
+  run "$BASH44" -c '
+    set -euEo pipefail
+    export LIBDIR="'"$REPO"'/lib"
+    source "$LIBDIR/log.sh"
+    err() { local rc=$?; eerr "cmd=${LAST_CMD:-none} rc=$rc"; exit "$rc"; }
+    trap err ERR
+    writer() { printf "label: gpt\n"; }
+    t="$(mktemp)"; writer > "$t"
+    cmd false < "$t"
+  '
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cmd="*"false"* ]]
+  [[ "$output" != *"writer"* ]]
+}

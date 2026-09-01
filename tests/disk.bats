@@ -163,3 +163,24 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"REACHED-END"* ]]
 }
+
+@test "require_tools: a present but non-executable tool counts as missing" {
+  # Regression from the VM test: `command -v` resolved sfdisk to a path with no
+  # execute bit, preflight passed, and it failed later with exit 126.
+  local dir="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$dir"
+  printf '#!/bin/sh\n' > "$dir/notexec-tool"
+  chmod 644 "$dir/notexec-tool"
+  PATH="$dir:$PATH" run require_tools notexec-tool
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"notexec-tool"* ]]
+}
+
+@test "require_tools: an executable tool on PATH still passes" {
+  local dir="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$dir"
+  printf '#!/bin/sh\n' > "$dir/yesexec-tool"
+  chmod 755 "$dir/yesexec-tool"
+  PATH="$dir:$PATH" run require_tools yesexec-tool
+  [ "$status" -eq 0 ]
+}

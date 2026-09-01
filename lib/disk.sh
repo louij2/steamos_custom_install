@@ -150,9 +150,14 @@ tools_for_target() {
 # happened to reach it first - which is exactly what issue #9 reported.
 require_tools() {
   local -a missing=()
-  local t
+  local t resolved
   for t in "$@"; do
-    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    resolved="$(command -v "$t" 2>/dev/null)" || { missing+=("$t"); continue; }
+    # `command -v` resolving is not the same as the binary being runnable: as
+    # root it can report a path with no execute bit, which then fails at the
+    # point of use with exit 126 instead of being caught here. Found by the VM
+    # test, where sfdisk was present but not executable.
+    [[ -x $resolved ]] || missing+=("$t")
   done
   [[ ${#missing[@]} -eq 0 ]] && return 0
 

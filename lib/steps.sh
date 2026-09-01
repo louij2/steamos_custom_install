@@ -92,9 +92,18 @@ repair_steps() {
       showcmd_unquoted "sfdisk $DISK <<< (partition table)"
       partition_table >&2
     else
+      # Deliberately NOT a pipeline. If sfdisk fails, the writer feeding it gets
+      # SIGPIPE, and the ERR trap then reports *the writer* - "exit 1 in
+      # partition_table" - while the real cause (say sfdisk exiting 126) is
+      # thrown away. Staging the table in a file keeps the failure attributable,
+      # and routing sfdisk through cmd() means the error names it.
+      local table
+      table="$(mktemp)"
+      partition_table > "$table"
       # --wipe always clears stale filesystem/RAID signatures that would
       # otherwise make sfdisk stop and ask an interactive question.
-      partition_table | sfdisk --wipe always --wipe-partitions always "$DISK"
+      cmd sfdisk --wipe always --wipe-partitions always "$DISK" < "$table"
+      rm -f "$table"
     fi
     # The kernel does not publish the new partition nodes synchronously.
     settle_disk "$DISK" 8
