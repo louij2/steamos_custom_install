@@ -96,8 +96,11 @@ setup() {
     boom
   '
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Last command run: false"* ]]
+  # bash 4.4+ ${*@Q} renders this as 'false' (shell-quoted); older bash would
+  # print it bare. Accept either rather than pinning to one bash's quoting.
+  [[ "$output" == *"Last command run: "*"false"* ]]
   [[ "$output" == *"at boom()"* ]]
+  [[ "$output" == *"at cmd()"* ]]
   [[ "$output" != *'"$@"'* ]]
 }
 
