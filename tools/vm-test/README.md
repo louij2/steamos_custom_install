@@ -26,12 +26,38 @@ This test found two real defects that every other layer passed:
 
 ## Running it
 
+**This needs a Linux host with KVM. It cannot run on macOS or Windows** — there
+is no `/dev/kvm`, no libvirt, no `losetup` and no `btrfs` there. Run it on the
+Linux box that will host the VM, not from your laptop.
+
 ```bash
 sudo tools/vm-test/run-vm-test.sh
 ```
 
 Needs root, `/dev/kvm`, libvirt, ~25 GB free and about 30 minutes. The ~3.3 GB
 recovery image is downloaded once and cached in the work directory.
+
+### On a remote KVM host
+
+```bash
+ssh root@your-kvm-host
+git clone https://github.com/louij2/steamos_custom_install.git
+cd steamos_custom_install
+sudo ./tools/vm-test/run-vm-test.sh --workdir /path/on/real/storage
+```
+
+### On Unraid
+
+Unraid's entire root filesystem lives in RAM, so the default `/var/tmp` work
+directory would try to hold 21 GB of disk images in memory. The script refuses
+to start in that case and tells you to pass `--workdir`. Point it at the array:
+
+```bash
+sudo ./tools/vm-test/run-vm-test.sh --workdir /mnt/user/isos/steamos-vm-test
+```
+
+Everything else it needs — `virsh`, `qemu`, `losetup`, `btrfs`, OVMF firmware at
+`/usr/share/qemu/ovmf-x64/` — is already present on a stock Unraid install.
 
 | Option | Meaning |
 |---|---|
