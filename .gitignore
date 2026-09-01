@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Extraction scratch. The vendored upstream/repair_device.sh IS committed;
+# these are the multi-GB intermediates that produce it.
+*.img
+*.img.zst
+*.img.zip
+
+# Editors / OS
+.DS_Store
+*.swp

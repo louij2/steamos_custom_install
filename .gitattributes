@@ -1,0 +1,5 @@
+# Valve's vendored script is a diff baseline, not our code. Marking it as
+# linguist-vendored keeps it out of the repo's language stats and collapses it
+# by default in PR review, so our own changes stay readable.
+upstream/** linguist-vendored
+docs/images.md linguist-generated

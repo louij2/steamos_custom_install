@@ -1,0 +1,142 @@
+name: Upstream sync (Valve repair_device.sh)
+
+# Pulls Valve's pristine repair_device.sh out of the newest SteamOS recovery
+# image and, if it has changed, opens a PULL REQUEST. It never pushes to a
+# branch you merge from directly - the PR is the approval gate, so a change
+# Valve makes cannot reach users without a human looking at the diff first.
+#
+# This downloads a ~3.3 GB image and loop-mounts it, so it runs monthly and on
+# demand only. Do not put it on push.
+
+on:
+  schedule:
+    - cron: "0 4 1 * *"   # 04:00 UTC on the 1st of each month
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Specific recovery build (e.g. 20260826.1000). Blank = newest."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        # The raw image is several GB once decompressed; the stock runner does
+        # not have room alongside the preinstalled toolchains.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          # e2fsprogs provides debugfs, which is how the home partition is read:
+          # Valve formats it with ext4 casefold and it will not mount without
+          # CONFIG_UNICODE. bzip2 covers the .bz2 recovery artefacts.
+          sudo apt-get install -y -qq zstd unzip bzip2 e2fsprogs
+
+      - name: Record the current vendored copy
+        id: before
+        run: |
+          if [[ -f upstream/repair_device.sh ]]; then
+            echo "sha=$(sha256sum upstream/repair_device.sh | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            echo "build=$(cat upstream/VERSION 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=none" >> "$GITHUB_OUTPUT"
+            echo "build=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract repair_device.sh from the recovery image
+        run: |
+          args=()
+          if [[ -n "${{ inputs.build }}" ]]; then
+            args+=(--build "${{ inputs.build }}")
+          fi
+          sudo -E ./tools/extract-upstream.sh "${args[@]}"
+          sudo chown "$(id -u):$(id -g)" upstream/repair_device.sh upstream/VERSION
+
+      - name: Compare against the vendored copy
+        id: after
+        run: |
+          new_sha="$(sha256sum upstream/repair_device.sh | cut -d' ' -f1)"
+          new_build="$(cat upstream/VERSION)"
+          echo "sha=$new_sha" >> "$GITHUB_OUTPUT"
+          echo "build=$new_build" >> "$GITHUB_OUTPUT"
+          if [[ "$new_sha" == "${{ steps.before.outputs.sha }}" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo ":: Valve's script is unchanged ($new_sha)"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo ":: Valve's script CHANGED"
+          fi
+
+      - name: Diff Valve's new script against our fork
+        if: steps.after.outputs.changed == 'true'
+        run: |
+          {
+            echo '### Valve changed `repair_device.sh`'
+            echo
+            echo "| | Build | SHA256 |"
+            echo "|---|---|---|"
+            echo "| Was | \`${{ steps.before.outputs.build }}\` | \`${{ steps.before.outputs.sha }}\` |"
+            echo "| Now | \`${{ steps.after.outputs.build }}\` | \`${{ steps.after.outputs.sha }}\` |"
+            echo
+            echo '#### What changed upstream'
+            echo
+            echo '```diff'
+            git --no-pager diff --no-color HEAD -- upstream/repair_device.sh | head -400
+            echo '```'
+          } > /tmp/summary.md
+          cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open a pull request for review
+        if: steps.after.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: automation/upstream-sync
+          base: main
+          commit-message: |
+            upstream: sync Valve repair_device.sh from build ${{ steps.after.outputs.build }}
+          title: "upstream: Valve changed repair_device.sh (build ${{ steps.after.outputs.build }})"
+          labels: upstream-sync
+          delete-branch: true
+          body: |
+            Valve's `repair_device.sh` changed in recovery build
+            `${{ steps.after.outputs.build }}`.
+
+            | | Build | SHA256 |
+            |---|---|---|
+            | Was | `${{ steps.before.outputs.build }}` | `${{ steps.before.outputs.sha }}` |
+            | Now | `${{ steps.after.outputs.build }}` | `${{ steps.after.outputs.sha }}` |
+
+            This PR updates **only** the vendored pristine copy in
+            `upstream/`. It deliberately does **not** touch `bin/` or `lib/` —
+            porting a change into the fork is a human decision.
+
+            ### What to do
+
+            1. Read the diff on `upstream/repair_device.sh` below.
+            2. Decide, per hunk, whether it should be ported into our fork.
+               Our divergences are catalogued in
+               [`docs/upstream-sync.md`](docs/upstream-sync.md).
+            3. If a change should be ported, do it in **this PR** so the
+               vendored copy and the fork move together.
+            4. If it should not, add a line to the divergence table saying why.
+
+            > Merging this with no other edits means "Valve changed something,
+            > and we have consciously chosen not to follow it."

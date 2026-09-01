@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# -*- mode: sh; indent-tabs-mode: nil; sh-basic-offset: 2; -*-
+# vim: et sts=2 sw=2
+#
+# Install or repair SteamOS from Valve's recovery image, on any disk -
+# including external SSDs and USB drives that Valve's own script cannot target.
+#
+# This is a fork of Valve's repair_device.sh. The pristine upstream copy this
+# fork tracks lives in upstream/repair_device.sh; see docs/upstream-sync.md.
+
+# -E is required: without it the ERR trap is NOT inherited by shell functions,
+# so a command failing inside one aborts the script with no output at all.
+set -euEo pipefail
+
+# This script uses ${var@Q} and ${var,,}, so it needs bash 4.4 or newer. Running
+# it with `sh script` or on an ancient bash otherwise fails with a syntax error
+# that says nothing about the real problem.
+if [[ -z ${BASH_VERSINFO:-} ]] || (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
+  echo >&2 "!! This installer needs bash 4.4 or newer (found: ${BASH_VERSION:-not bash})."
+  echo >&2 "!! Run it as 'sudo ./repair_device.sh <target>', not 'sh ./repair_device.sh'."
+  exit 1
+fi
+
+# sudo replaces PATH with its own secure_path, which on some distributions does
+# not include /usr/sbin - where sfdisk, mkfs.* and friends live. That is how a
+# perfectly present tool turns into "exit 127" partway through an install
+# (issue #9). Put the standard admin directories back before anything runs.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export PATH
+
+PROGNAME="${0##*/}"
+SCRIPTDIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+export LIBDIR="${LIBDIR:-$SCRIPTDIR/../lib}"
+
+# shellcheck source=lib/log.sh
+source "$LIBDIR/log.sh"
+# shellcheck source=lib/disk.sh
+source "$LIBDIR/disk.sh"
+# shellcheck source=lib/ui.sh
+source "$LIBDIR/ui.sh"
+# shellcheck source=lib/steps.sh
+source "$LIBDIR/steps.sh"
+# shellcheck source=lib/sanitize.sh
+source "$LIBDIR/sanitize.sh"
+
+usage() {
+  cat >&2 <<EOD
+Install or repair SteamOS, on internal or external drives.
+
+Usage: sudo $PROGNAME [options] <target>
+
+Targets:
+  all        Permanently destroy all data on the target disk and reinstall SteamOS.
+  system     Reinstall SteamOS on the system partitions, keeping games and home.
+  home       Remove games and personalization.
+  chroot     Chroot into the primary SteamOS partition set.
+  sanitize   Perform an NVMe sanitize operation.
+
+Options:
+  -d, --disk DEVICE   Target whole disk, e.g. /dev/sda. Prompted for if omitted.
+  -n, --dry-run       Print every destructive command instead of running it.
+  -y, --yes           Skip all confirmation prompts (implies --no-zenity).
+      --no-zenity     Always use terminal prompts, never GUI dialogs.
+      --poweroff      Power off instead of rebooting when finished.
+      --list-disks    Show attached disks and exit.
+  -h, --help          Show this help.
+
+Environment (still honoured, for compatibility with older instructions):
+  NOPROMPT=1  NOZENITY=1  POWEROFF=1  HANG_ON_ERROR=1  DRY_RUN=1
+  FORCEBIOS=1           Enable the BIOS update step (Steam Deck hardware only).
+  FORCECONTROLLER=1     Enable the controller firmware update step.
+
+Examples:
+  sudo $PROGNAME --list-disks
+  sudo $PROGNAME --disk /dev/sda --dry-run all
+  sudo $PROGNAME -d /dev/sda all
+EOD
+}
+
+TARGET=""
+DISK="${DISK:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--disk)     DISK="${2:?--disk needs a device}"; shift 2 ;;
+    --disk=*)      DISK="${1#*=}"; shift ;;
+    -n|--dry-run)  DRY_RUN=1; export DRY_RUN; shift ;;
+    -y|--yes)      NOPROMPT=1; NOZENITY=1; export NOPROMPT NOZENITY; shift ;;
+    --no-zenity)   NOZENITY=1; export NOZENITY; shift ;;
+    --poweroff)    POWEROFF=1; export POWEROFF; shift ;;
+    --list-disks)  list_disks; exit 0 ;;
+    -h|--help)     usage; exit 0 ;;
+    -*)            usage; die "Unknown option: $1" ;;
+    *)
+      [[ -z $TARGET ]] || { usage; die "More than one target given: '$TARGET' and '$1'"; }
+      TARGET="$1"; shift ;;
+  esac
+done
+
+# Validate the target *before* prompting for a disk, so a typo prints help
+# rather than asking the user to confirm something that is never going to run.
+case "$TARGET" in
+  all|system|home|chroot|sanitize) ;;
+  "") usage; exit 1 ;;
+  *)  usage; die "Unknown target: $TARGET" ;;
+esac
+
+if [[ $EUID -ne 0 && -z ${DRY_RUN:-} ]]; then
+  die "Please run as root, e.g. sudo $PROGNAME $TARGET"
+fi
+
+# Report where we failed and exit. Valve's original blocks forever here because
+# it runs under an OOBE image with no shell to return to; this fork is launched
+# from a terminal. Set HANG_ON_ERROR=1 to restore the original behaviour.
+err() {
+  local rc=$?
+  echo >&2
+  eerr "Failed at ${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]} (exit $rc)"
+  # BASH_COMMAND inside cmd() is the literal string "$@", which is what made
+  # issue #10 unactionable. Prefer the command cmd() recorded.
+  if [[ -n ${LAST_CMD:-} ]]; then
+    eerr "Last command run: $LAST_CMD"
+  else
+    eerr "Failing command: ${BASH_COMMAND}"
+  fi
+  case $rc in
+    127) eerr "Exit 127 means the command was not found. PATH is: $PATH" ;;
+    126) eerr "Exit 126 means the command was found but is not executable." ;;
+  esac
+  stacktrace 1
+  eerr "Imaging error occurred, see above and restart the process."
+  eerr "Please include everything above if you open an issue."
+  [[ -z ${HANG_ON_ERROR:-} ]] || sleep infinity
+  exit "$rc"
+}
+trap err ERR
+
+onexit=()
+# NOTE: every statement here must be errexit-safe. A bare failing test inside an
+# EXIT trap re-triggers the ERR trap and replaces the real error message with a
+# meaningless one from this handler - which is precisely the silent-failure
+# behaviour this fork exists to eliminate. Hence `|| continue`, not `&&`.
+exithandler() {
+  local func
+  for func in "${onexit[@]+"${onexit[@]}"}"; do
+    [[ -n $func ]] || continue
+    "$func" || true
+  done
+}
+trap exithandler EXIT
+
+# Choose the disk.
+if [[ -z $DISK ]]; then
+  list_disks
+  read -rp "Enter target disk (e.g. /dev/sda): " DISK || true
+fi
+validate_disk "$DISK"
+DISK_SUFFIX="$(disk_suffix "$DISK")"
+export DISK DISK_SUFFIX
+
+# Check every external tool this target needs before offering to destroy
+# anything, so a missing binary is named up front instead of surfacing as a
+# bare exit 127 halfway through (issue #9).
+# shellcheck disable=SC2046
+require_tools $(tools_for_target "$TARGET")
+
+estat "Target disk: $DISK"
+estat "Will use partitions like: ${DISK}${DISK_SUFFIX}1, ${DISK}${DISK_SUFFIX}2, ..."
+[[ -n ${DRY_RUN:-} ]] && ewarn "DRY RUN - no destructive command will actually execute"
+
+# The disk confirmation is separate from, and ahead of, the per-target prompt.
+if [[ -z ${NOPROMPT:-} ]]; then
+  read -rp "Are you SURE you want to use this disk? (type YES to continue): " confirm || true
+  [[ ${confirm:-} == "YES" ]] || die "Aborted by user"
+fi
+
+writePartitionTable=0
+writeOS=0
+writeHome=0
+
+case "$TARGET" in
+  all)
+    prompt_step "Reimage device" "This action will reimage the device.\nThis will permanently destroy all data on $DISK and reinstall SteamOS.\n\nThis cannot be undone.\n\nChoose Proceed only if you wish to clear and reimage this device."
+    writePartitionTable=1; writeOS=1; writeHome=1
+    repair_steps
+    prompt_reboot "Reimaging complete."
+    ;;
+  system)
+    prompt_step "Reinstall SteamOS" "This action will reinstall SteamOS on $DISK, while attempting to preserve your games and personal content.\nSystem customizations may be lost.\n\nChoose Proceed to reinstall SteamOS on your device."
+    writeOS=1
+    repair_steps
+    prompt_reboot "SteamOS reinstall complete."
+    ;;
+  home)
+    prompt_step "Delete local user data" "This action will reformat the home partition on $DISK.\nThis will destroy downloaded games and all personal content, including system configuration.\n\nThis action cannot be undone.\n\nChoose Proceed to reformat the user home partition."
+    writeHome=1
+    repair_steps
+    prompt_reboot "User partitions have been reformatted."
+    ;;
+  chroot)
+    chroot_primary
+    ;;
+  sanitize)
+    prompt_step "Clear and sanitize NVMe disk" "This action will kick off an NVMe sanitize on $DISK, irrevocably deleting all user data.\n\nThis action cannot be undone.\n\nChoose Proceed only if you want to remove all data from this drive."
+    sanitize_all
+    ;;
+esac
