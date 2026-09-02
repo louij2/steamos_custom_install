@@ -185,9 +185,12 @@ done
 info "firmware: $OVMF_CODE"
 
 # Ask libvirt for the host's emulator rather than assuming this machine has it.
+# Must be domcapabilities for the x86_64 guest specifically: plain
+# `virsh capabilities` lists every guest arch the host can emulate, and taking
+# the first one happily hands back qemu-system-aarch64.
 if [[ -z ${EMULATOR:-} ]]; then
-  EMULATOR="$(virsh capabilities 2>/dev/null \
-    | sed -n 's|.*<emulator>\(.*\)</emulator>.*|\1|p' | head -1)"
+  EMULATOR="$(virsh domcapabilities --arch x86_64 --virttype kvm 2>/dev/null \
+    | sed -n 's|.*<path>\(.*\)</path>.*|\1|p' | head -1)"
 fi
 [[ -n ${EMULATOR:-} ]] || EMULATOR="$(command -v qemu-system-x86_64 || echo /usr/local/sbin/qemu)"
 [[ -n $EMULATOR ]] || die "could not determine the qemu emulator; set EMULATOR"
