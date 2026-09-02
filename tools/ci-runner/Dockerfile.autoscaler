@@ -1,0 +1,13 @@
+# Watches the repo's job queue and spawns ephemeral runner containers.
+#
+# Needs the host's docker socket, because it starts sibling containers rather
+# than running jobs itself. It never runs job code.
+FROM python:3.12-alpine
+
+RUN apk add --no-cache docker-cli
+
+COPY autoscaler.py /usr/local/bin/autoscaler.py
+RUN chmod +x /usr/local/bin/autoscaler.py
+
+EXPOSE 9826
+ENTRYPOINT ["python3", "-u", "/usr/local/bin/autoscaler.py"]

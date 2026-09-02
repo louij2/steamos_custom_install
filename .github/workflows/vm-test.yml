@@ -35,12 +35,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run the end-to-end VM test
-        run: sudo tools/vm-test/run-vm-test.sh ${{ inputs.build && format('--build {0}', inputs.build) || '' }}
+        # VM_TEST_WORKDIR is set by the runner: it must be a path that exists
+        # identically on the libvirt host, since libvirt resolves the disk
+        # images there. It must not be RAM-backed - see the script's guard.
+        run: |
+          sudo --preserve-env=VM_TEST_WORKDIR,OVMF_CODE,OVMF_VARS \
+            tools/vm-test/run-vm-test.sh \
+            --workdir "${VM_TEST_WORKDIR:-/var/tmp/steamos-vm-test}" \
+            ${{ inputs.build && format('--build {0}', inputs.build) || '' }}
 
       - name: Publish the guest console log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vm-console-log
-          path: /var/tmp/steamos-vm-test/console.log
+          path: ${{ env.VM_TEST_WORKDIR || '/var/tmp/steamos-vm-test' }}/console.log
           if-no-files-found: warn

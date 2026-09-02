@@ -1,0 +1,32 @@
+# Ephemeral GitHub Actions runner able to drive a libvirt host.
+#
+# It does NOT run qemu itself: it talks to the host's libvirt over the mounted
+# socket, so the VM runs on the host while this container only orchestrates.
+# What it does need locally is the disk plumbing - losetup, mount, btrfs - which
+# is why it runs privileged with the host's /dev.
+FROM ubuntu:24.04
+
+ARG RUNNER_VERSION=2.337.0
+ARG RUNNER_ARCH=x64
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUNNER_ALLOW_RUNASROOT=1 \
+    RUNNER_MANUALLY_TRAP_SIG=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl jq git sudo unzip tar gzip bzip2 xz-utils \
+      libvirt-clients qemu-utils \
+      util-linux mount udev btrfs-progs e2fsprogs dosfstools \
+      coreutils gawk sed grep procps iproute2 \
+      libicu74 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /actions-runner
+RUN curl -fsSL -o runner.tar.gz \
+      "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz" \
+    && tar xzf runner.tar.gz && rm runner.tar.gz
+
+COPY runner-entrypoint.sh /usr/local/bin/runner-entrypoint.sh
+RUN chmod +x /usr/local/bin/runner-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/runner-entrypoint.sh"]

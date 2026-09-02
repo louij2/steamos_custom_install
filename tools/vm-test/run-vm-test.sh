@@ -167,7 +167,11 @@ umount "$MNT"
 losetup -d "$LOOP"; LOOP=""
 
 # --- 4. define and boot ---------------------------------------------------
-OVMF_CODE=""; OVMF_VARS=""
+# Firmware and emulator live on the LIBVIRT HOST, which is not necessarily this
+# machine - a containerised CI runner drives libvirt over its socket. So these
+# are overridable, and the emulator is asked of libvirt itself rather than
+# looked for locally.
+OVMF_CODE="${OVMF_CODE:-}"; OVMF_VARS="${OVMF_VARS:-}"
 for d in /usr/share/qemu/ovmf-x64 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/edk2-ovmf/x64; do
   for c in OVMF_CODE-pure-efi.fd OVMF_CODE.fd OVMF_CODE.secboot.fd; do
     [[ -f "$d/$c" && -z $OVMF_CODE ]] && OVMF_CODE="$d/$c"
@@ -176,11 +180,18 @@ for d in /usr/share/qemu/ovmf-x64 /usr/share/OVMF /usr/share/edk2/ovmf /usr/shar
     [[ -f "$d/$v" && -z $OVMF_VARS ]] && OVMF_VARS="$d/$v"
   done
 done
-[[ -n $OVMF_CODE && -n $OVMF_VARS ]] || die "no OVMF firmware found - install edk2-ovmf"
+[[ -n $OVMF_CODE && -n $OVMF_VARS ]] || die "no OVMF firmware found.
+   Install edk2-ovmf, or set OVMF_CODE and OVMF_VARS to paths on the libvirt host."
 info "firmware: $OVMF_CODE"
 
-EMULATOR="$(command -v qemu-system-x86_64 || echo /usr/local/sbin/qemu)"
-[[ -x $EMULATOR ]] || die "no qemu emulator found"
+# Ask libvirt for the host's emulator rather than assuming this machine has it.
+if [[ -z ${EMULATOR:-} ]]; then
+  EMULATOR="$(virsh capabilities 2>/dev/null \
+    | sed -n 's|.*<emulator>\(.*\)</emulator>.*|\1|p' | head -1)"
+fi
+[[ -n ${EMULATOR:-} ]] || EMULATOR="$(command -v qemu-system-x86_64 || echo /usr/local/sbin/qemu)"
+[[ -n $EMULATOR ]] || die "could not determine the qemu emulator; set EMULATOR"
+info "emulator: $EMULATOR"
 
 : > "$CONSOLE"
 virsh destroy "$DOMAIN" >/dev/null 2>&1 || true
