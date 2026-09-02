@@ -39,15 +39,27 @@ jobs:
         # identically on the libvirt host, since libvirt resolves the disk
         # images there. It must not be RAM-backed - see the script's guard.
         run: |
+          WORKDIR="${VM_TEST_WORKDIR:-/var/tmp/steamos-vm-test}"
+          echo "VM_TEST_WORKDIR=$WORKDIR" >> "$GITHUB_ENV"
           sudo --preserve-env=VM_TEST_WORKDIR,OVMF_CODE,OVMF_VARS \
             tools/vm-test/run-vm-test.sh \
-            --workdir "${VM_TEST_WORKDIR:-/var/tmp/steamos-vm-test}" \
+            --workdir "$WORKDIR" \
             ${{ inputs.build && format('--build {0}', inputs.build) || '' }}
+
+      # Copy the log into the workspace first. The work directory lives outside
+      # it and is only known at run time, and upload-artifact cannot see a
+      # runner process env var through the ${{ env }} context.
+      - name: Collect the guest console log
+        if: always()
+        run: |
+          cp "${VM_TEST_WORKDIR:-/var/tmp/steamos-vm-test}/console.log" vm-console.log 2>/dev/null \
+            || echo "no console log produced" > vm-console.log
+          wc -l vm-console.log
 
       - name: Publish the guest console log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vm-console-log
-          path: ${{ env.VM_TEST_WORKDIR || '/var/tmp/steamos-vm-test' }}/console.log
+          path: vm-console.log
           if-no-files-found: warn
