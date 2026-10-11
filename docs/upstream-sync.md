@@ -106,6 +106,7 @@ these areas, it needs thought rather than a straight port.
 | 9 | No dry run | `--dry-run` prints every destructive command | Makes the whole path testable in CI without a disk |
 | 10 | One 469-line script | `bin/` + `lib/` modules | Reviewable, and unit-testable with bats |
 | 11 | `set -eu` | `set -euEo pipefail` | `-E` propagates the ERR trap into functions; without it a failure inside a function aborted with **no output at all** |
+| 12 | Assumes the machine booted via UEFI | `require_uefi` checks the firmware before anything destructive | `steamos-chroot` bind-mounts `/sys/firmware/efi/efivars` unconditionally and exits 32 on a legacy-BIOS boot — in the *last* step, with the disk already wiped. Valve never hits it because a Deck is always UEFI; we run on whatever the user happened to boot (issue #12) |
 
 ## Running it by hand
 

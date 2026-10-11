@@ -143,6 +143,7 @@ sudo chmod 000 /dev/nvme0n1
 | `DRY_RUN=1` | Same as `--dry-run` |
 | `FORCEBIOS=1` | Enable the BIOS update step — **Steam Deck hardware only** |
 | `FORCECONTROLLER=1` | Enable the controller firmware update step |
+| `DOUEFIVERIFY=0` | Skip the UEFI preflight check — SteamOS is UEFI-only, so expect `steamos-chroot` to fail |
 
 ---
 
@@ -200,6 +201,45 @@ sudo umount -R /dev/sda1
 If the disk is held by LUKS or LVM rather than a plain mount, close that first
 (`sudo cryptsetup close <name>`, or `sudo vgchange -an`).
 
+### The install dies at `steamos-chroot` with "mount point does not exist"
+
+The symptom, right at the end of an otherwise clean install:
+
+```
++ 'steamos-chroot' '--no-overlay' '--disk' '/dev/sdb' '--partset' 'A' '--' 'mkdir' '-p' '/efi/SteamOS'
+mount: /tmp/tmp.XXXXXXXX/sys/firmware/efi/efivars: mount point does not exist.
+!! Failed at log.sh:49 (exit 32)
+```
+
+**Your machine did not boot via UEFI.** `steamos-chroot` bind-mounts
+`/sys/firmware/efi/efivars` into the chroot unconditionally, and the kernel only
+creates that path when it booted through UEFI firmware with working EFI variable
+services. On a legacy BIOS/CSM boot it does not exist, so the mount fails with
+`exit 32` — and it fails in the *last* step, after the partition table has been
+rewritten and both 5 GB system partitions written. SteamOS is UEFI-only
+regardless: Valve's `grub-mkimage` only ever builds an `x86_64-efi` image, and
+there is no BIOS boot path anywhere in their tooling.
+
+The installer now checks this **before** it touches the disk, and says which of
+the two cases you are in. To fix it:
+
+- **If you booted the recovery image through Ventoy,** pick its UEFI boot entry
+  rather than the legacy/BIOS one — Ventoy's legacy path boots the image without
+  UEFI firmware, which is exactly this failure. Writing the image straight to
+  the stick with Rufus (GPT/UEFI) or Balena Etcher avoids the question entirely.
+- **In firmware setup,** turn off `CSM` / "Legacy Boot" / "Legacy Support" and
+  set the boot mode to UEFI. Then boot the stick from the entry listed as
+  `UEFI: <your stick>`.
+- **If `/sys/firmware/efi` exists but `/sys/firmware/efi/efivars` does not,** you
+  did boot via UEFI but the kernel has no EFI variable services. Check
+  `cat /proc/cmdline` for `efi=noruntime` or `noefi`, and `dmesg | grep -i efi`.
+
+To check before you start:
+
+```bash
+ls /sys/firmware/efi/efivars   # must exist, and must not be empty
+```
+
 ### "exit 127" partway through
 
 Exit 127 means a command was **not found**. The two usual causes:
@@ -236,6 +276,7 @@ Pass a **whole disk**, not a partition — `/dev/sda`, not `/dev/sda1`. Run
 | Hangs forever on error             | Reports the failing command, line and call stack, then exits |
 | Fails at exit 127/1 with no context | Preflights every required tool and names what is missing |
 | Trips over auto-mounted partitions | Unmounts the target disk before partitioning |
+| Dies at `steamos-chroot` on a non-UEFI boot, after wiping the disk | Checks the firmware up front and explains how to fix it |
 | Wipes disks with no confirmation   | Prompts before doing anything destructive |
 | No way to preview                  | `--dry-run` prints every command, runs none |
 | Flashes Deck BIOS + controller FW  | Skipped unless you opt in — safer on non-Deck hardware |

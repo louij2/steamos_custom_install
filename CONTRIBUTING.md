@@ -7,6 +7,7 @@ bin/steamos-install     the entrypoint: argument parsing, prompts, flow
 lib/log.sh              output helpers, and cmd() which honours DRY_RUN
 lib/ui.sh               zenity-or-terminal confirmation prompts
 lib/disk.sh             target validation, partition naming, partition table
+lib/firmware.sh         UEFI preflight: can this machine boot what we install?
 lib/steps.sh            the actual imaging work
 lib/sanitize.sh         NVMe sanitize / secure format
 repair_device.sh        compatibility shim -> bin/steamos-install

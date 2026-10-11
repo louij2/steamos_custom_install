@@ -36,6 +36,8 @@ export LIBDIR="${LIBDIR:-$SCRIPTDIR/../lib}"
 source "$LIBDIR/log.sh"
 # shellcheck source=lib/disk.sh
 source "$LIBDIR/disk.sh"
+# shellcheck source=lib/firmware.sh
+source "$LIBDIR/firmware.sh"
 # shellcheck source=lib/ui.sh
 source "$LIBDIR/ui.sh"
 # shellcheck source=lib/steps.sh
@@ -69,6 +71,8 @@ Environment (still honoured, for compatibility with older instructions):
   NOPROMPT=1  NOZENITY=1  POWEROFF=1  HANG_ON_ERROR=1  DRY_RUN=1
   FORCEBIOS=1           Enable the BIOS update step (Steam Deck hardware only).
   FORCECONTROLLER=1     Enable the controller firmware update step.
+  DOUEFIVERIFY=0        Skip the UEFI preflight check. SteamOS is UEFI-only, so
+                        the install will almost certainly fail without it.
 
 Examples:
   sudo $PROGNAME --list-disks
@@ -126,6 +130,17 @@ err() {
   case $rc in
     127) eerr "Exit 127 means the command was not found. PATH is: $PATH" ;;
     126) eerr "Exit 126 means the command was found but is not executable." ;;
+    32)
+      # Exit 32 is mount(8) refusing. Inside steamos-chroot that is nearly
+      # always the efivars bind failing on a machine that did not boot via
+      # UEFI - the preflight check should have caught it, so say so loudly
+      # rather than leaving the user with a bare exit code (issue #12).
+      if [[ ${LAST_CMD:-} == *steamos-chroot* ]]; then
+        eerr "Exit 32 is a mount failure inside steamos-chroot. If the output above"
+        eerr "mentions /sys/firmware/efi/efivars, this machine is not UEFI-booted -"
+        eerr "see 'the install dies at steamos-chroot' in the readme."
+      fi
+      ;;
   esac
   stacktrace 1
   eerr "Imaging error occurred, see above and restart the process."
@@ -163,6 +178,15 @@ export DISK DISK_SUFFIX
 # bare exit 127 halfway through (issue #9).
 # shellcheck disable=SC2046
 require_tools $(tools_for_target "$TARGET")
+
+# Same idea for the firmware. Every target that shells out to steamos-chroot
+# needs a UEFI boot with EFI variables, because steamos-chroot mounts
+# /sys/firmware/efi/efivars unconditionally - and finding that out at the end of
+# an install, with the disk already gone, is issue #12. The tool list is reused
+# as the signal so the two cannot drift apart.
+if [[ " $(tools_for_target "$TARGET") " == *" steamos-chroot "* ]]; then
+  require_uefi
+fi
 
 estat "Target disk: $DISK"
 estat "Will use partitions like: ${DISK}${DISK_SUFFIX}1, ${DISK}${DISK_SUFFIX}2, ..."
