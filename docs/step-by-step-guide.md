@@ -65,6 +65,13 @@ Down until the boot menu appears. Choose your USB stick (usually listed as
 If the USB doesn't appear, go into the BIOS/UEFI settings and:
 - Turn **Secure Boot** off
 - Set storage mode to **AHCI**, not RAID/Intel RST
+- Set the boot mode to **UEFI**, and turn **CSM** / "Legacy Boot" **off**
+
+> ⚠️ **Boot it in UEFI mode, not legacy/BIOS mode.** SteamOS can only boot via
+> UEFI. If you pick a legacy boot entry — easy to do by accident with Ventoy —
+> the install runs almost to the end and then fails at `steamos-chroot`. The
+> installer now stops before touching your disk when it spots this, but it is
+> easier to pick the entry listed as `UEFI: <your stick>` in the first place.
 
 After a minute or two you'll land on a desktop with a few icons. You're in the
 recovery environment. **Nothing has been changed on your machine yet.**

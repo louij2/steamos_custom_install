@@ -53,7 +53,30 @@ if [[ $out2 == *"recovery image"* ]]; then ok "told the user about the boot medi
 if [[ $out2 != *"Write known partition table"* ]]; then ok "aborted before partitioning"; else bad "aborted before partitioning"; fi
 
 # ---------------------------------------------------------------------------
-banner "T3: a failing sfdisk is blamed on sfdisk, not on the table writer"
+banner "T3: a non-UEFI boot is refused before anything is destroyed (issue #12)"
+# steamos-chroot bind-mounts /sys/firmware/efi/efivars unconditionally and dies
+# with "mount point does not exist" when the host did not boot via UEFI - in the
+# LAST step of the install, with the disk already repartitioned and 10 GB
+# written. This VM boots OVMF, so /sys/firmware/efi genuinely is present here;
+# EFI_SYSFS is pointed at a path that does not exist to stage the legacy-BIOS
+# case. A SeaBIOS domain cannot be used instead: Valve's recovery image is
+# EFI-only and would not boot at all.
+out_efi="$(EFI_SYSFS=/nonexistent-efi bash "$REPO/bin/steamos-install" --yes --disk "$TARGET" all 2>&1)" || true
+echo "$out_efi" | tail -10
+if [[ $out_efi == *"did not boot via UEFI"* ]]; then ok "named the firmware as the reason"; else bad "named the firmware as the reason"; fi
+if [[ $out_efi != *"Write known partition table"* ]]; then ok "aborted before partitioning"; else bad "aborted before partitioning"; fi
+
+# ...and the real firmware state of this VM must pass, or every test below is
+# exercising the wrong path.
+if [[ -d /sys/firmware/efi/efivars ]]; then ok "the VM itself is UEFI-booted with efivars"; else bad "the VM itself is UEFI-booted with efivars"; fi
+if out_ok="$(EFI_SYSFS=/sys/firmware/efi bash -c 'LIBDIR="'"$REPO"'/lib"; export LIBDIR; source "$LIBDIR/firmware.sh"; require_uefi' 2>&1)"; then
+  ok "require_uefi passes against the real firmware here"
+else
+  bad "require_uefi rejected a genuinely UEFI-booted machine: $out_ok"
+fi
+
+# ---------------------------------------------------------------------------
+banner "T4: a failing sfdisk is blamed on sfdisk, not on the table writer"
 # Regression guard. This used to be a pipeline, so a dying sfdisk sent SIGPIPE
 # to the writer and the ERR trap reported the writer instead.
 cat > /tmp/fake-sfdisk <<'FAKE'
@@ -64,17 +87,17 @@ exit 33
 FAKE
 chmod +x /tmp/fake-sfdisk
 mount --bind /tmp/fake-sfdisk /usr/bin/sfdisk
-out3="$(bash "$REPO/bin/steamos-install" --yes --disk "$TARGET" all 2>&1)"
-rc3=$?
+out4="$(bash "$REPO/bin/steamos-install" --yes --disk "$TARGET" all 2>&1)"
+rc4=$?
 umount /usr/bin/sfdisk
-echo "$out3" | tail -12
-echo "rc=$rc3"
-if [[ $out3 == *"Last command run:"*sfdisk* ]]; then ok "the error names sfdisk"; else bad "the error names sfdisk"; fi
-if [[ $out3 != *"cat <<END_PARTITION_TABLE"* ]]; then ok "no longer blames the table writer"; else bad "no longer blames the table writer"; fi
-if [[ $rc3 -eq 33 ]]; then ok "propagated sfdisk's real exit code (33)"; else bad "propagated sfdisk's real exit code (33)"; fi
+echo "$out4" | tail -12
+echo "rc=$rc4"
+if [[ $out4 == *"Last command run:"*sfdisk* ]]; then ok "the error names sfdisk"; else bad "the error names sfdisk"; fi
+if [[ $out4 != *"cat <<END_PARTITION_TABLE"* ]]; then ok "no longer blames the table writer"; else bad "no longer blames the table writer"; fi
+if [[ $rc4 -eq 33 ]]; then ok "propagated sfdisk's real exit code (33)"; else bad "propagated sfdisk's real exit code (33)"; fi
 
 # ---------------------------------------------------------------------------
-banner "T4: full install onto a MOUNTED disk (the issue #9 scenario)"
+banner "T5: full install onto a MOUNTED disk (the issue #9 scenario)"
 wipefs -a "$TARGET" >/dev/null 2>&1 || true
 printf 'label: gpt\nstart=2048, size=204800, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n' \
   | sfdisk "$TARGET" >/dev/null 2>&1 || true
@@ -86,14 +109,14 @@ echo "target starts out mounted at: $(findmnt -rno TARGET --source "${TARGET}1")
 # Suppress the installer's closing reboot so verification below can run.
 mount --bind /bin/true /usr/bin/systemctl
 bash "$REPO/bin/steamos-install" --yes --disk "$TARGET" all > /tmp/install.log 2>&1
-rc4=$?
+rc5=$?
 umount /usr/bin/systemctl
 tail -25 /tmp/install.log
-echo "installer rc=$rc4"
-if [[ $rc4 -eq 0 ]]; then ok "installed onto a disk that began mounted"; else bad "installed onto a disk that began mounted"; fi
+echo "installer rc=$rc5"
+if [[ $rc5 -eq 0 ]]; then ok "installed onto a disk that began mounted"; else bad "installed onto a disk that began mounted"; fi
 
 # ---------------------------------------------------------------------------
-banner "T5: verify what landed on the disk"
+banner "T6: verify what landed on the disk"
 udevadm settle --timeout=20 || true
 allgood=1
 chk() {

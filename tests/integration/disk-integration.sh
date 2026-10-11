@@ -142,6 +142,65 @@ else
 fi
 rm -rf "$shim"
 
+# ---------------------------------------------------------------------------
+echo; echo "=== issue #12: a non-UEFI boot is refused before the disk is touched ==="
+# steamos-chroot bind-mounts /sys/firmware/efi/efivars unconditionally, so on a
+# machine that did not boot via UEFI it dies with "mount point does not exist".
+# That happens in the LAST step of the install, with the partition table already
+# rewritten and 10 GB written. This proves the preflight check fires first, with
+# a real block device in play.
+#
+# EFI_SYSFS pointing at a path that does not exist is exactly what a legacy
+# BIOS/CSM boot looks like to the installer. Only the genuinely absent tools get
+# shimmed - so require_tools passes and the firmware check is actually reached,
+# while sfdisk stays real and the table below is a real witness.
+sentinel="$(mktemp)"
+printf 'label: gpt\n%sp1: name="sentinel", size=32MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4\n' \
+  "$LOOP" > "$sentinel"
+sfdisk --wipe always --wipe-partitions always "$LOOP" < "$sentinel" >/dev/null
+rm -f "$sentinel"
+settle_disk "$LOOP" 1 >/dev/null 2>&1 || true
+before="$(sfdisk -d "$LOOP" 2>/dev/null | grep -c sentinel || true)"
+
+shimdir="$(mktemp -d)"
+shimmed=()
+for t in $(tools_for_target all); do
+  command -v "$t" >/dev/null 2>&1 && continue
+  printf '#!/bin/sh\nexit 0\n' > "$shimdir/$t"
+  chmod 755 "$shimdir/$t"
+  shimmed+=("$t")
+done
+echo ":: shimmed the tools this host lacks: ${shimmed[*]+${shimmed[*]}}"
+
+rc12=0
+out12="$(PATH="$shimdir:$PATH" EFI_SYSFS="$shimdir/no-such-efi" \
+         bash "$REPO/bin/steamos-install" --yes --disk "$LOOP" all 2>&1)" || rc12=$?
+echo "$out12" | tail -12
+echo ":: installer rc=$rc12"
+rm -rf "$shimdir"
+
+if [[ $rc12 -ne 0 ]]; then
+  ok "the installer refused to run on a machine that is not UEFI-booted"
+else
+  bad "the installer proceeded on a non-UEFI machine"
+fi
+if [[ "$out12" == *"did not boot via UEFI"* ]]; then
+  ok "named the firmware as the reason"
+else
+  bad "did not name the firmware: $out12"
+fi
+if [[ "$out12" != *"Write known partition table"* ]]; then
+  ok "aborted before the first destructive step"
+else
+  bad "reached the partition table write before failing"
+fi
+after="$(sfdisk -d "$LOOP" 2>/dev/null | grep -c sentinel || true)"
+if [[ $before -eq 1 && $after -eq 1 ]]; then
+  ok "the target disk is byte-for-byte untouched"
+else
+  bad "the sentinel partition table changed (before=$before after=$after)"
+fi
+
 echo
 echo "=== $PASS passed, $FAIL failed ==="
 [[ $FAIL -eq 0 ]]
